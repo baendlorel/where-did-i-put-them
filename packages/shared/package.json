@@ -15,8 +15,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm --target node20 --dts --out-dir dist --clean",
-    "dev": "tsup src/index.ts --format esm --target node20 --dts --out-dir dist --watch",
+    "build": "tsdown",
+    "dev": "tsdown --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
@@ -24,7 +24,6 @@
     "polygon-clipping": "^0.15.7"
   },
   "devDependencies": {
-    "tsup": "^8.5.1",
     "typescript": "^5.7.3",
     "vitest": "^2.1.9"
   }

@@ -6,13 +6,30 @@ import type { Project } from '@shijian/shared';
 import Fastify from 'fastify';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { existsSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { ProjectStore } from './store';
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-export const DEFAULT_DATA_DIR = path.resolve(moduleDir, '../data');
+
+/**
+ * In the monorepo we keep the seed data next to the server package. When the
+ * CLI is installed from npm there is no writable `data` directory inside the
+ * package, so fall back to a per-user directory.
+ */
+const packageDataDir = path.resolve(moduleDir, '../data');
+export const DEFAULT_DATA_DIR = existsSync(packageDataDir)
+  ? packageDataDir
+  : path.join(os.homedir(), '.wdipt');
+
+/** `dist/web` for the published CLI, `apps/web/dist` while developing. */
+const webRootCandidates = [
+  path.resolve(moduleDir, 'web'),
+  path.resolve(moduleDir, '../../web/dist'),
+];
+export const DEFAULT_WEB_ROOT = webRootCandidates.find((candidate) => existsSync(candidate)) ?? null;
 
 interface HubClient {
   socket: WebSocket;
@@ -99,6 +116,8 @@ export interface AppHandle {
   app: FastifyInstance;
   store: ProjectStore;
   hub: RealtimeHub;
+  dataDir: string;
+  webRoot: string | null;
 }
 
 export async function buildApp(options: AppOptions = {}): Promise<AppHandle> {
@@ -106,7 +125,7 @@ export async function buildApp(options: AppOptions = {}): Promise<AppHandle> {
   const webRoot =
     options.webRoot === null
       ? null
-      : options.webRoot ?? process.env.WEB_DIST ?? path.resolve(moduleDir, '../../web/dist');
+      : options.webRoot ?? process.env.WEB_DIST ?? DEFAULT_WEB_ROOT;
   const store = await ProjectStore.open(dataDir);
   const app = Fastify({
     logger: options.logger ?? true,
@@ -236,7 +255,7 @@ export async function buildApp(options: AppOptions = {}): Promise<AppHandle> {
     hub.closeAll();
   });
 
-  return { app, store, hub };
+  return { app, store, hub, dataDir, webRoot };
 }
 
 export type { Project };

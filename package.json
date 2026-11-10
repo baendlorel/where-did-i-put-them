@@ -1,17 +1,24 @@
 {
   "name": "where-did-i-put-them",
   "version": "0.1.0",
+  "private": true,
   "description": "Where Did I Put Them — Home Layout Modeling and Item Memory Workbench",
   "description_zh": "拾间 — 居家平面建模与物品记忆工作台",
+  "type": "module",
   "scripts": {
-    "dev": "pnpm --filter @shijian/shared build && concurrently -n server,web -c blue,green \"pnpm --filter @shijian/server dev\" \"pnpm --filter @shijian/web dev\"",
-    "build": "pnpm -r build",
-    "typecheck": "pnpm -r typecheck",
-    "test": "pnpm --filter @shijian/shared test && pnpm --filter @shijian/server test",
-    "start": "pnpm --filter @shijian/server start"
+    "dev": "pnpm --filter @shijian/shared build && pnpm --parallel --filter wdipt --filter @shijian/web dev",
+    "build": "tsx scripts/build.ts",
+    "typecheck": "pnpm -r typecheck && tsc -p scripts/tsconfig.json --noEmit",
+    "test": "pnpm -r test",
+    "start": "pnpm --filter wdipt start",
+    "pack:npm": "tsx scripts/package.ts",
+    "publish:npm": "tsx scripts/package.ts --publish"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2",
+    "@shijian/shared": "workspace:*",
+    "@types/node": "^22.13.4",
+    "tsdown": "^0.23.7",
+    "tsx": "^4.23.15",
     "typescript": "^5.7.3"
   },
   "packageManager": "pnpm@11.12.0",

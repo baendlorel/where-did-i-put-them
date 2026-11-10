@@ -4,7 +4,8 @@
 
 - **后端**：Fastify + TypeScript + WebSocket，JSON 文件持久化
 - **前端**：Vue 3 + TypeScript + Three.js + Canvas 2D
-- **工程**：pnpm workspace monorepo，共享领域模型与几何算法
+- **工程**：pnpm workspace monorepo，tsdown 打包，共享领域模型与几何算法
+- **发布**：`wdipt` npm CLI，一条命令启动完整应用
 
 ![平面模式](docs/preview-plan.png)
 
@@ -66,6 +67,8 @@ pnpm install
 pnpm dev
 ```
 
+`pnpm dev` 先构建 shared，然后使用 pnpm 自带的 `--parallel` 同时启动 Fastify（tsx watch）和 Vite，不依赖 concurrently。
+
 - 前端：<http://localhost:5173>
 - 后端：<http://127.0.0.1:8787>
 - WebSocket：`ws://127.0.0.1:8787/ws`（开发环境由 Vite 代理）
@@ -79,16 +82,43 @@ pnpm build
 pnpm start
 ```
 
-访问 <http://127.0.0.1:8787>。Fastify 会同时提供 API、WebSocket 和 `apps/web/dist` 静态资源。
+`pnpm build` 由 `scripts/build.ts` 编排：shared → web → `wdipt`（tsdown），最后把 `apps/web/dist` 复制进 `apps/server/dist/web`，验证 CLI shebang、bin 配置与静态资源后再结束。
+
+访问 <http://127.0.0.1:8787>。Fastify 会同时提供 API、WebSocket 和打包后的静态资源。
 
 可用环境变量：
 
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `PORT` | `8787` | 服务端口 |
-| `HOST` | `0.0.0.0` | 监听地址 |
-| `DATA_DIR` | `apps/server/data` | 项目 JSON 目录 |
-| `WEB_DIST` | `apps/web/dist` | 生产前端目录 |
+| 变量 | 仓库内默认值 | npm CLI 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `PORT` | `8787` | `8787` | 服务端口 |
+| `HOST` | `0.0.0.0` | `0.0.0.0` | 监听地址 |
+| `DATA_DIR` | `apps/server/data` | `~/.wdipt` | 项目 JSON 目录 |
+| `WEB_DIST` | `apps/web/dist` | 包内 `dist/web` | 前端静态资源目录 |
+
+### npm 命令 `wdipt`
+
+`apps/server` 已配置为可发布的 `wdipt` 包，产物包含后端 bundle 和前端静态资源。
+
+```bash
+# 发布前先构建并检查 tarball（输出到 release/）
+pnpm pack:npm
+
+# 登录 npm 后真正发布
+pnpm publish:npm
+```
+
+发布后用户可以：
+
+```bash
+npx wdipt
+# 或
+npm install -g wdipt
+wdipt --port 9000
+wdipt --data-dir ./my-home-data
+wdipt --help
+```
+
+`wdipt` 会解析 `--port`、`--host`、`--data-dir`、`--web-dist`，也支持对应的环境变量。首次运行在 `~/.wdipt` 生成示例项目。默认监听 `0.0.0.0`；如果只想在本机使用，可加 `--host 127.0.0.1`。
 
 ## 快捷键
 
@@ -115,11 +145,14 @@ pnpm start
 ```text
 .
 ├── apps
-│   ├── server                 # Fastify + WebSocket + JSON 持久化
-│   │   └── src
-│   │       ├── app.ts         # 路由、静态资源、WebSocket hub
-│   │       ├── store.ts       # 原子写入与版本递增
-│   │       └── validation.ts  # 网络输入规范化
+│   ├── server                 # wdipt CLI：Fastify + WebSocket + JSON 持久化
+│   │   ├── src
+│   │   │   ├── cli.ts         # bin 入口、参数解析、--help / --version
+│   │   │   ├── start.ts       # 启动、端口识别、优雅退出
+│   │   │   ├── app.ts         # 路由、静态资源、WebSocket hub
+│   │   │   ├── store.ts       # 原子写入与版本递增
+│   │   │   └── validation.ts  # 网络输入规范化
+│   │   └── tsdown.config.ts   # 后端 bundle 配置与依赖内联
 │   └── web                    # Vue 3 前端
 │       └── src
 │           ├── components     # 顶栏、工具栏、2D 画布、3D 场景、Inspector、搜索
@@ -130,6 +163,10 @@ pnpm start
 │           └── stores         # 单一响应式工作区与撤销栈
 ├── packages
 │   └── shared                 # 类型、几何布尔、家具目录、演示数据、搜索
+├── scripts                    # TypeScript 构建/打包/发布脚本
+│   ├── build.ts               # shared → web → wdipt，并复制前端资源
+│   ├── package.ts             # npm pack / publish，校验 tarball
+│   └── lib                    # 子进程与构建辅助
 ├── docs                       # 预览图
 └── package.json
 ```
@@ -210,10 +247,13 @@ interface StoredItem {
 ## 测试与构建
 
 ```bash
-pnpm typecheck   # 三个包全部类型检查
+pnpm typecheck   # 三个 workspace 包 + scripts TypeScript 类型检查
 pnpm test        # 共享几何 8 项 + 服务端 API 4 项
-pnpm build       # shared(tsup) -> server(tsup) / web(vite)
+pnpm build       # shared(tsdown) -> web(vite) -> wdipt(tsdown) -> 装配 CLI
+pnpm pack:npm    # 构建、打包并校验 npm tarball
 ```
+
+`tsdown` 只安装在仓库根目录，workspace 包通过 pnpm 的 root bin 解析执行。后端 bundle 会内联 `@shijian/shared` 与 `polygon-clipping`，外部化 Fastify / ws 等 npm 运行时依赖。
 
 测试覆盖：
 

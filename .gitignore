@@ -7,3 +7,4 @@ apps/server/data/*.tmp
 playwright-report
 test-results
 screenshots
+release
