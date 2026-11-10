@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import AppIcon from './AppIcon.vue';
+import FloorSwitcher from './FloorSwitcher.vue';
+import HouseMenu from './HouseMenu.vue';
 import {
-  commit,
+  activeHouse,
+  createHouse,
   openSearch,
   redo,
+  renameHouse,
   setView,
-  startNewProject,
   state,
   toggleHelp,
   undo,
@@ -34,13 +37,15 @@ function renameProject(event: Event): void {
   const target = event.target as HTMLInputElement;
   const name = target.value.trim();
   if (!name) {
-    target.value = state.project.name;
+    target.value = activeHouse.value.name;
     return;
   }
-  if (name === state.project.name) return;
-  commit((project) => {
-    project.name = name.slice(0, 120);
-  }, { key: 'project-name' });
+  if (name === activeHouse.value.name) return;
+  renameHouse(name);
+}
+
+function addHouse(): void {
+  createHouse('新的家');
 }
 </script>
 
@@ -65,16 +70,18 @@ function renameProject(event: Event): void {
       <span class="project-eyebrow">当前住宅</span>
       <input
         class="project-name"
-        :value="state.project.name"
+        :value="activeHouse.name"
         maxlength="120"
         spellcheck="false"
-        aria-label="项目名称"
+        aria-label="住宅名称"
         @change="renameProject"
         @keydown.enter="($event.target as HTMLInputElement).blur()"
       />
     </div>
 
     <div class="topbar-center">
+      <FloorSwitcher />
+      <span class="center-divider" />
       <div class="view-switch" role="group" aria-label="视图模式">
         <button
           :class="{ active: state.view === '2d' }"
@@ -97,7 +104,7 @@ function renameProject(event: Event): void {
 
     <div class="top-actions">
       <div class="history-group">
-        <button class="icon-btn" title="新建空白住宅（可撤销）" @click="startNewProject">
+        <button class="icon-btn" title="新建一栋房子（可撤销）" @click="addHouse">
           <AppIcon name="plus" :size="17" />
         </button>
         <button
@@ -128,6 +135,8 @@ function renameProject(event: Event): void {
         <span class="sync-dot" />
         <span>{{ syncLabel }}</span>
       </div>
+
+      <HouseMenu />
 
       <div class="presence" :title="state.clients > 1 ? `${state.clients} 个窗口正在协同` : '当前仅一个窗口'">
         <AppIcon name="users" :size="15" />
@@ -227,7 +236,17 @@ function renameProject(event: Event): void {
 .topbar-center {
   flex: 1;
   display: flex;
+  align-items: center;
   justify-content: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.center-divider {
+  width: 1px;
+  height: 24px;
+  background: var(--line);
+  flex-shrink: 0;
 }
 
 .view-switch {
@@ -384,10 +403,13 @@ function renameProject(event: Event): void {
   color: var(--ink-soft);
 }
 
-@media (max-width: 1240px) {
+@media (max-width: 1360px) {
   .project-block {
     display: none;
   }
+}
+
+@media (max-width: 1240px) {
   .search-trigger span:not(.search-key) {
     display: none;
   }
@@ -396,11 +418,26 @@ function renameProject(event: Event): void {
   }
 }
 
+@media (max-width: 1080px) {
+  .topbar {
+    gap: 12px;
+  }
+  .sync-pill {
+    display: none;
+  }
+  .view-switch button span {
+    display: none;
+  }
+  .view-switch button {
+    padding: 0 10px;
+  }
+}
+
 @media (max-width: 980px) {
   .wordmark span {
     display: none;
   }
-  .sync-pill {
+  .presence {
     display: none;
   }
 }

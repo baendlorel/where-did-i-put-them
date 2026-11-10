@@ -1,8 +1,8 @@
 import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import websocket from '@fastify/websocket';
-import { searchProject } from '@shijian/shared';
-import type { Project } from '@shijian/shared';
+import { searchWorkspace } from '@shijian/shared';
+import type { Workspace } from '@shijian/shared';
 import Fastify from 'fastify';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { existsSync } from 'node:fs';
@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
-import { ProjectStore } from './store';
+import { WorkspaceStore } from './store';
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -114,7 +114,7 @@ export interface AppOptions {
 
 export interface AppHandle {
   app: FastifyInstance;
-  store: ProjectStore;
+  store: WorkspaceStore;
   hub: RealtimeHub;
   dataDir: string;
   webRoot: string | null;
@@ -126,7 +126,7 @@ export async function buildApp(options: AppOptions = {}): Promise<AppHandle> {
     options.webRoot === null
       ? null
       : options.webRoot ?? process.env.WEB_DIST ?? DEFAULT_WEB_ROOT;
-  const store = await ProjectStore.open(dataDir);
+  const store = await WorkspaceStore.open(dataDir);
   const app = Fastify({
     logger: options.logger ?? true,
     bodyLimit: 8 * 1024 * 1024,
@@ -141,27 +141,29 @@ export async function buildApp(options: AppOptions = {}): Promise<AppHandle> {
   app.get('/api/health', async () => ({
     ok: true,
     clients: hub.size,
-    projectId: store.get().id,
+    workspaceId: store.get().id,
     revision: store.get().revision,
+    houses: store.get().houses.length,
+    floors: store.get().houses.reduce((sum, house) => sum + house.floors.length, 0),
   }));
 
-  app.get('/api/project', async () => store.get());
+  app.get('/api/workspace', async () => store.get());
 
-  app.put('/api/project', async (request: FastifyRequest, reply: FastifyReply) => {
+  app.put('/api/workspace', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      const project = await store.replace(request.body);
-      hub.everyone({ type: 'project:updated', project, origin: 'rest' });
-      return project;
+      const workspace = await store.replace(request.body);
+      hub.everyone({ type: 'workspace:updated', workspace, origin: 'rest' });
+      return workspace;
     } catch (error) {
-      request.log.warn({ err: error }, 'Invalid project update');
-      return reply.code(400).send({ error: '项目数据格式不正确' });
+      request.log.warn({ err: error }, 'Invalid workspace update');
+      return reply.code(400).send({ error: '工作区数据格式不正确' });
     }
   });
 
   app.get('/api/search', async (request, reply) => {
     const query = (request.query as { q?: string }).q ?? '';
     if (!query.trim()) return reply.code(400).send({ error: '缺少搜索关键词' });
-    return { query, hits: searchProject(store.get(), query) };
+    return { query, hits: searchWorkspace(store.get(), query) };
   });
 
   app.get(
@@ -192,34 +194,34 @@ export async function buildApp(options: AppOptions = {}): Promise<AppHandle> {
             hub.setClientId(socket, String(message.clientId ?? ''));
             hub.send(socket, {
               type: 'welcome',
-              project: store.get(),
+              workspace: store.get(),
               clients: hub.size,
             });
             return;
           }
 
-          if (message.type === 'project:update') {
+          if (message.type === 'workspace:update') {
             try {
-              const next = await store.replace(message.project);
+              const next = await store.replace(message.workspace);
               const requestId = message.requestId;
               hub.send(socket, {
-                type: 'project:ack',
+                type: 'workspace:ack',
                 requestId,
                 revision: next.revision,
                 updatedAt: next.updatedAt,
               });
               hub.everyone(
                 {
-                  type: 'project:updated',
-                  project: next,
+                  type: 'workspace:updated',
+                  workspace: next,
                   origin: message.clientId,
                   requestId,
                 },
                 socket,
               );
             } catch (error) {
-              request.log.warn({ err: error }, 'Rejected websocket project update');
-              hub.send(socket, { type: 'error', message: '项目同步失败，数据格式不正确' });
+              request.log.warn({ err: error }, 'Rejected websocket workspace update');
+              hub.send(socket, { type: 'error', message: '工作区同步失败，数据格式不正确' });
             }
           }
         })();
@@ -241,9 +243,9 @@ export async function buildApp(options: AppOptions = {}): Promise<AppHandle> {
     });
   } else {
     app.get('/', async () => ({
-      service: 'shijian-server',
+      service: 'wdipt',
       message: '开发模式请访问 Vite 前端 http://localhost:5173',
-      projectId: store.get().id,
+      workspaceId: store.get().id,
     }));
   }
 
@@ -258,4 +260,4 @@ export async function buildApp(options: AppOptions = {}): Promise<AppHandle> {
   return { app, store, hub, dataDir, webRoot };
 }
 
-export type { Project };
+export type { Workspace };

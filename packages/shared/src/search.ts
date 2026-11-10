@@ -1,40 +1,54 @@
-import { FURNITURE_CATALOG, furnitureKindLabel } from './catalog';
-import type { Project, SearchHit } from './types';
+import { furnitureKindLabel } from './catalog';
+import type { SearchHit, Workspace } from './types';
 
-export function searchProject(project: Project, rawQuery: string): SearchHit[] {
+export function searchWorkspace(workspace: Workspace, rawQuery: string): SearchHit[] {
   const query = rawQuery.trim().toLocaleLowerCase();
   if (!query) return [];
   const hits: SearchHit[] = [];
 
-  for (const furniture of project.furniture) {
-    const containerMatches = furniture.name.toLocaleLowerCase().includes(query);
-    if (containerMatches) {
-      hits.push({
-        furnitureId: furniture.id,
-        furnitureName: furniture.name,
-        furnitureKind: furniture.kind,
-        itemId: null,
-        itemName: furniture.name,
-        quantity: furniture.items.length,
-        note: `${furnitureKindLabel(furniture.kind)} · 共 ${furniture.items.length} 类物品`,
-        match: 'furniture',
-      });
-    }
+  for (const house of workspace.houses) {
+    for (const floor of house.floors) {
+      const context = {
+        houseId: house.id,
+        houseName: house.name,
+        floorId: floor.id,
+        floorName: floor.name,
+        floorLevel: floor.level,
+      };
 
-    for (const item of furniture.items) {
-      const nameMatch = item.name.toLocaleLowerCase().includes(query);
-      const noteMatch = item.note.toLocaleLowerCase().includes(query);
-      if (!nameMatch && !noteMatch) continue;
-      hits.push({
-        furnitureId: furniture.id,
-        furnitureName: furniture.name,
-        furnitureKind: furniture.kind,
-        itemId: item.id,
-        itemName: item.name,
-        quantity: item.quantity,
-        note: item.note,
-        match: noteMatch ? 'note' : 'item',
-      });
+      for (const furniture of floor.furniture) {
+        const containerMatches = furniture.name.toLocaleLowerCase().includes(query);
+        if (containerMatches) {
+          hits.push({
+            ...context,
+            furnitureId: furniture.id,
+            furnitureName: furniture.name,
+            furnitureKind: furniture.kind,
+            itemId: null,
+            itemName: furniture.name,
+            quantity: furniture.items.length,
+            note: `${furnitureKindLabel(furniture.kind)} · 共 ${furniture.items.length} 类物品`,
+            match: 'furniture',
+          });
+        }
+
+        for (const item of furniture.items) {
+          const nameMatch = item.name.toLocaleLowerCase().includes(query);
+          const noteMatch = item.note.toLocaleLowerCase().includes(query);
+          if (!nameMatch && !noteMatch) continue;
+          hits.push({
+            ...context,
+            furnitureId: furniture.id,
+            furnitureName: furniture.name,
+            furnitureKind: furniture.kind,
+            itemId: item.id,
+            itemName: item.name,
+            quantity: item.quantity,
+            note: item.note,
+            match: noteMatch ? 'note' : 'item',
+          });
+        }
+      }
     }
   }
 
@@ -47,16 +61,12 @@ export function searchProject(project: Project, rawQuery: string): SearchHit[] {
   };
 
   return hits
-    .sort((a, b) => rank(a) - rank(b) || a.itemName.localeCompare(b.itemName, 'zh-CN'))
-    .slice(0, 60);
-}
-
-export function furnitureSearchText(project: Project): string {
-  return project.furniture
-    .flatMap((f) => [
-      f.name,
-      FURNITURE_CATALOG[f.kind].label,
-      ...f.items.flatMap((item) => [item.name, item.note]),
-    ])
-    .join(' ');
+    .sort(
+      (a, b) =>
+        rank(a) - rank(b) ||
+        a.houseName.localeCompare(b.houseName, 'zh-CN') ||
+        a.floorLevel - b.floorLevel ||
+        a.itemName.localeCompare(b.itemName, 'zh-CN'),
+    )
+    .slice(0, 80);
 }

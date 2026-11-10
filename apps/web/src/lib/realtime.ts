@@ -2,7 +2,7 @@ import { createId } from '@shijian/shared';
 import {
   bindSyncRequester,
   pushToast,
-  replaceProject,
+  replaceWorkspace,
   setClients,
   setSync,
   state,
@@ -30,17 +30,17 @@ function scheduleFlush(delay = 450): void {
 async function flush(): Promise<void> {
   if (!dirty) return;
   dirty = false;
-  const payload = JSON.stringify(state.project);
+  const payload = JSON.stringify(state.workspace);
   if (socket?.readyState === WebSocket.OPEN) {
     const requestId = `save_${++requestSeq}`;
     pendingRequestId = requestId;
     setSync('saving');
     socket.send(
       JSON.stringify({
-        type: 'project:update',
+        type: 'workspace:update',
         clientId,
         requestId,
-        project: JSON.parse(payload) as unknown,
+        workspace: JSON.parse(payload) as unknown,
       }),
     );
     window.clearTimeout(ackTimer);
@@ -56,14 +56,14 @@ async function flush(): Promise<void> {
 
   try {
     setSync('saving');
-    const response = await fetch('/api/project', {
+    const response = await fetch('/api/workspace', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: payload,
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const project = (await response.json()) as typeof state.project;
-    markSaved(project.revision, project.updatedAt);
+    const workspace = (await response.json()) as typeof state.workspace;
+    markSaved(workspace.revision, workspace.updatedAt);
     if (dirty) scheduleFlush(80);
   } catch {
     dirty = true;
@@ -98,9 +98,9 @@ function connect(): void {
 
     if (message.type === 'welcome') {
       setClients(Number(message.clients ?? 1));
-      const remote = message.project as typeof state.project;
-      if (remote && remote.revision > state.project.revision && !dirty) {
-        replaceProject(remote, { remote: true });
+      const remote = message.workspace as typeof state.workspace;
+      if (remote && remote.revision > state.workspace.revision && !dirty) {
+        replaceWorkspace(remote, { remote: true });
         pushToast('已载入服务器上的最新版本', 'info');
       }
       setSync('saved');
@@ -113,23 +113,26 @@ function connect(): void {
       return;
     }
 
-    if (message.type === 'project:ack') {
+    if (message.type === 'workspace:ack') {
       if (message.requestId !== pendingRequestId) return;
       pendingRequestId = '';
       window.clearTimeout(ackTimer);
-      markSaved(Number(message.revision ?? state.project.revision), String(message.updatedAt ?? new Date().toISOString()));
+      markSaved(
+        Number(message.revision ?? state.workspace.revision),
+        String(message.updatedAt ?? new Date().toISOString()),
+      );
       if (dirty) scheduleFlush(80);
       return;
     }
 
-    if (message.type === 'project:updated') {
-      const remote = message.project as typeof state.project;
+    if (message.type === 'workspace:updated') {
+      const remote = message.workspace as typeof state.workspace;
       if (!remote) return;
       if (dirty) {
         pushToast('另一处正在编辑，本机修改将在稍后保存', 'warn');
         return;
       }
-      replaceProject(remote, { remote: true });
+      replaceWorkspace(remote, { remote: true });
       markSaved(remote.revision, remote.updatedAt);
       pushToast('已同步另一处修改', 'info');
       return;
@@ -168,10 +171,10 @@ function connect(): void {
 function handleBeforeUnload(): void {
   if (!dirty) return;
   try {
-    void fetch('/api/project', {
+    void fetch('/api/workspace', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(state.project),
+      body: JSON.stringify(state.workspace),
       keepalive: true,
     });
   } catch {

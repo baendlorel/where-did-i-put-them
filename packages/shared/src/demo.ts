@@ -1,21 +1,33 @@
+import { STAIR_DEFAULTS } from './catalog';
 import { createId } from './geometry';
-import type { FloorShape, Furniture, Opening, Project, Wall } from './types';
+import { floorName } from './types';
+import type {
+  FloorPlan,
+  FloorShape,
+  Furniture,
+  House,
+  Opening,
+  Stair,
+  Wall,
+  Workspace,
+} from './types';
 
 const now = () => new Date().toISOString();
 
-export function createEmptyProject(name = '未命名住宅'): Project {
+export function createFloorPlan(level = 0, name = floorName(level)): FloorPlan {
   return {
-    schemaVersion: 1,
-    id: createId('project'),
+    id: createId('floor'),
     name,
-    revision: 0,
-    updatedAt: now(),
-    floor: { shapes: [], walls: [], openings: [] },
+    level,
+    shapes: [],
+    walls: [],
+    openings: [],
     furniture: [],
+    stairs: [],
   };
 }
 
-export function createStarterProject(name = '新住宅'): Project {
+export function createStarterFloor(level = 0): FloorPlan {
   const footprint: FloorShape = {
     id: createId('shape'),
     kind: 'rect',
@@ -33,14 +45,288 @@ export function createStarterProject(name = '新住宅'): Project {
     { id: createId('wall'), a: { x: 0, y: 6 }, b: { x: 0, y: 0 }, thickness: 0.2 },
   ];
   return {
-    ...createEmptyProject(name),
-    floor: { shapes: [footprint], walls: perimeter, openings: [] },
+    ...createFloorPlan(level),
+    shapes: [footprint],
+    walls: perimeter,
   };
 }
 
-/** A complete, lived-in demo apartment that also exercises every feature. */
-export function createDemoProject(): Project {
+export function createStarterHouse(name = '新的家'): House {
+  return {
+    id: createId('house'),
+    name,
+    floors: [createStarterFloor(0)],
+  };
+}
+
+export function createEmptyWorkspace(): Workspace {
+  return {
+    schemaVersion: 2,
+    id: createId('workspace'),
+    revision: 0,
+    updatedAt: now(),
+    houses: [createStarterHouse()],
+  };
+}
+
+function upperFloor(): FloorPlan {
+  const level = 1;
   const shapes: FloorShape[] = [
+    {
+      id: 'u_shape_main',
+      kind: 'rect',
+      x: 0,
+      y: 0,
+      width: 10,
+      height: 7,
+      rotation: 0,
+      mode: 'union',
+    },
+    {
+      id: 'u_shape_wing',
+      kind: 'rect',
+      x: 10,
+      y: 2.2,
+      width: 3.2,
+      height: 4.8,
+      rotation: 0,
+      mode: 'union',
+    },
+  ];
+
+  const walls: Wall[] = [
+    { id: 'u_wall_south', a: { x: 0, y: 0 }, b: { x: 10, y: 0 }, thickness: 0.24 },
+    { id: 'u_wall_east_short', a: { x: 10, y: 0 }, b: { x: 10, y: 2.2 }, thickness: 0.24 },
+    { id: 'u_wall_wing_south', a: { x: 10, y: 2.2 }, b: { x: 13.2, y: 2.2 }, thickness: 0.24 },
+    { id: 'u_wall_east', a: { x: 13.2, y: 2.2 }, b: { x: 13.2, y: 7 }, thickness: 0.24 },
+    { id: 'u_wall_north', a: { x: 13.2, y: 7 }, b: { x: 0, y: 7 }, thickness: 0.24 },
+    { id: 'u_wall_west', a: { x: 0, y: 7 }, b: { x: 0, y: 0 }, thickness: 0.24 },
+    { id: 'u_wall_center', a: { x: 6.4, y: 0 }, b: { x: 6.4, y: 4.4 }, thickness: 0.16 },
+    { id: 'u_wall_mid', a: { x: 0, y: 4.4 }, b: { x: 13.2, y: 4.4 }, thickness: 0.16 },
+    { id: 'u_wall_bath', a: { x: 9.4, y: 4.4 }, b: { x: 9.4, y: 7 }, thickness: 0.14 },
+  ];
+
+  const openings: Opening[] = [
+    { id: 'u_door_left', wallId: 'u_wall_center', kind: 'door', offset: 0.18, width: 0.9 },
+    { id: 'u_door_left_b', wallId: 'u_wall_center', kind: 'door', offset: 0.72, width: 0.9 },
+    { id: 'u_door_mid_left', wallId: 'u_wall_mid', kind: 'door', offset: 0.28, width: 0.9 },
+    { id: 'u_door_mid_right', wallId: 'u_wall_mid', kind: 'door', offset: 0.7, width: 0.9 },
+    { id: 'u_door_bath', wallId: 'u_wall_bath', kind: 'door', offset: 0.45, width: 0.8 },
+    { id: 'u_win_south_a', wallId: 'u_wall_south', kind: 'window', offset: 0.22, width: 1.7 },
+    { id: 'u_win_south_b', wallId: 'u_wall_south', kind: 'window', offset: 0.78, width: 1.4 },
+    { id: 'u_win_north_a', wallId: 'u_wall_north', kind: 'window', offset: 0.2, width: 1.8 },
+    { id: 'u_win_north_b', wallId: 'u_wall_north', kind: 'window', offset: 0.68, width: 2.2 },
+    { id: 'u_win_west', wallId: 'u_wall_west', kind: 'window', offset: 0.5, width: 1.3 },
+    { id: 'u_win_east', wallId: 'u_wall_east', kind: 'window', offset: 0.48, width: 1.5 },
+  ];
+
+  const furniture: Furniture[] = [
+    {
+      id: 'u_bed_left',
+      kind: 'bed',
+      name: '次卧双人床',
+      x: 2.55,
+      y: 1.7,
+      rotation: 0,
+      width: 1.8,
+      depth: 2.05,
+      color: '#c9b8a4',
+      items: [{ id: 'u_i_quilt', name: '备用羽绒被', quantity: 2, note: '床下收纳袋' }],
+    },
+    {
+      id: 'u_night_left',
+      kind: 'nightstand',
+      name: '次卧床头柜',
+      x: 1.35,
+      y: 0.72,
+      rotation: 0,
+      width: 0.5,
+      depth: 0.45,
+      color: '#b08f6e',
+      items: [
+        { id: 'u_i_book', name: '睡前读物', quantity: 3, note: '上层抽屉' },
+        { id: 'u_i_glasses', name: '备用眼镜', quantity: 1, note: '' },
+      ],
+    },
+    {
+      id: 'u_bed_right',
+      kind: 'bed',
+      name: '主卧双人床',
+      x: 8.6,
+      y: 2.1,
+      rotation: 0,
+      width: 1.7,
+      depth: 2.0,
+      color: '#bca993',
+      items: [{ id: 'u_i_heater', name: '暖炉', quantity: 1, note: '床下第二个箱子' }],
+    },
+    {
+      id: 'u_cab_right',
+      kind: 'cabinet',
+      name: '主卧衣柜',
+      x: 12.55,
+      y: 4.6,
+      rotation: -Math.PI / 2,
+      width: 1.8,
+      depth: 0.52,
+      color: '#7c8fa6',
+      items: [
+        { id: 'u_i_coat', name: '冬季大衣', quantity: 4, note: '防尘罩' },
+        { id: 'u_i_luggage', name: '旅行背包', quantity: 1, note: '顶柜' },
+      ],
+    },
+    {
+      id: 'u_desk',
+      kind: 'table',
+      name: '阁楼书桌',
+      x: 7.6,
+      y: 5.8,
+      rotation: 0,
+      width: 1.7,
+      depth: 0.8,
+      color: '#8f684c',
+      items: [
+        { id: 'u_i_notes', name: '手账本', quantity: 2, note: '抽屉里' },
+        { id: 'u_i_pen', name: '钢笔礼盒', quantity: 1, note: '' },
+      ],
+    },
+    {
+      id: 'u_cab_top',
+      kind: 'cabinet',
+      name: '阁楼储物柜',
+      x: 10.6,
+      y: 6.35,
+      rotation: Math.PI,
+      width: 1.5,
+      depth: 0.48,
+      color: '#6f7b70',
+      items: [{ id: 'u_i_deco', name: '节日装饰', quantity: 2, note: '下层左侧' }],
+    },
+  ];
+
+  return {
+    id: 'floor_wutong_2',
+    name: floorName(level),
+    level,
+    shapes,
+    walls,
+    openings,
+    furniture,
+    stairs: [],
+  };
+}
+
+function studioHouse(): House {
+  const level = 0;
+  const floor: FloorPlan = {
+    id: 'floor_studio_1',
+    name: floorName(level),
+    level,
+    shapes: [
+      {
+        id: 's_shape_main',
+        kind: 'rect',
+        x: 0,
+        y: 0,
+        width: 7.2,
+        height: 5.4,
+        rotation: 0,
+        mode: 'union',
+      },
+      {
+        id: 's_shape_bay',
+        kind: 'ellipse',
+        x: 5.0,
+        y: 0.2,
+        width: 2.2,
+        height: 2.2,
+        rotation: 0,
+        mode: 'union',
+      },
+    ],
+    walls: [
+      { id: 's_wall_south', a: { x: 0, y: 0 }, b: { x: 7.2, y: 0 }, thickness: 0.22 },
+      { id: 's_wall_east', a: { x: 7.2, y: 0 }, b: { x: 7.2, y: 5.4 }, thickness: 0.22 },
+      { id: 's_wall_north', a: { x: 7.2, y: 5.4 }, b: { x: 0, y: 5.4 }, thickness: 0.22 },
+      { id: 's_wall_west', a: { x: 0, y: 5.4 }, b: { x: 0, y: 0 }, thickness: 0.22 },
+      { id: 's_wall_partition', a: { x: 4.4, y: 3.2 }, b: { x: 7.2, y: 3.2 }, thickness: 0.14 },
+    ],
+    openings: [
+      { id: 's_door_entry', wallId: 's_wall_south', kind: 'door', offset: 0.28, width: 1.0 },
+      { id: 's_win_south', wallId: 's_wall_south', kind: 'window', offset: 0.7, width: 1.8 },
+      { id: 's_win_west', wallId: 's_wall_west', kind: 'window', offset: 0.55, width: 1.6 },
+      { id: 's_win_north', wallId: 's_wall_north', kind: 'window', offset: 0.35, width: 2.0 },
+      { id: 's_door_bath', wallId: 's_wall_partition', kind: 'door', offset: 0.55, width: 0.8 },
+    ],
+    furniture: [
+      {
+        id: 's_desk',
+        kind: 'table',
+        name: '工作台',
+        x: 2.0,
+        y: 2.4,
+        rotation: 0,
+        width: 1.9,
+        depth: 0.9,
+        color: '#8f684c',
+        items: [
+          { id: 's_i_camera', name: '备用相机', quantity: 1, note: '右侧抽屉' },
+          { id: 's_i_drive', name: '素材硬盘', quantity: 2, note: '贴着绿色标签' },
+        ],
+      },
+      {
+        id: 's_sofa',
+        kind: 'sofa',
+        name: '窗边沙发',
+        x: 2.2,
+        y: 4.4,
+        rotation: Math.PI,
+        width: 1.9,
+        depth: 0.85,
+        color: '#a58b9e',
+        items: [{ id: 's_i_throw', name: '羊毛毯', quantity: 1, note: '搭在扶手上' }],
+      },
+      {
+        id: 's_cab',
+        kind: 'cabinet',
+        name: '样品柜',
+        x: 5.9,
+        y: 4.3,
+        rotation: Math.PI,
+        width: 1.4,
+        depth: 0.48,
+        color: '#7f927f',
+        items: [
+          { id: 's_i_sample', name: '材料样品册', quantity: 6, note: '按色系排列' },
+          { id: 's_i_tool', name: '精密螺丝刀', quantity: 1, note: '' },
+        ],
+      },
+      {
+        id: 's_bed',
+        kind: 'bed',
+        name: '午休床',
+        x: 5.6,
+        y: 1.45,
+        rotation: 0,
+        width: 1.4,
+        depth: 1.95,
+        color: '#bca993',
+        items: [{ id: 's_i_pillow', name: '旅行枕', quantity: 1, note: '' }],
+      },
+    ],
+    stairs: [],
+  };
+
+  return {
+    id: 'house_studio',
+    name: '河畔工作室',
+    floors: [floor],
+  };
+}
+
+/** A complete workspace with two houses, a two-storey home and a stair. */
+export function createDemoWorkspace(): Workspace {
+  const groundShapes: FloorShape[] = [
     {
       id: 'shape_main',
       kind: 'rect',
@@ -63,7 +349,7 @@ export function createDemoProject(): Project {
     },
   ];
 
-  const walls: Wall[] = [
+  const groundWalls: Wall[] = [
     { id: 'wall_south', a: { x: 0, y: 0 }, b: { x: 10, y: 0 }, thickness: 0.24 },
     { id: 'wall_east_short', a: { x: 10, y: 0 }, b: { x: 10, y: 2.2 }, thickness: 0.24 },
     { id: 'wall_wing_south', a: { x: 10, y: 2.2 }, b: { x: 13.2, y: 2.2 }, thickness: 0.24 },
@@ -75,7 +361,7 @@ export function createDemoProject(): Project {
     { id: 'wall_center', a: { x: 5.2, y: 0 }, b: { x: 5.2, y: 4.4 }, thickness: 0.16 },
   ];
 
-  const openings: Opening[] = [
+  const groundOpenings: Opening[] = [
     { id: 'door_entry', wallId: 'wall_south', kind: 'door', offset: 0.58, width: 1.05 },
     { id: 'win_living', wallId: 'wall_south', kind: 'window', offset: 0.2, width: 1.65 },
     { id: 'win_bedroom', wallId: 'wall_south', kind: 'window', offset: 0.82, width: 1.3 },
@@ -89,7 +375,7 @@ export function createDemoProject(): Project {
     { id: 'win_wing_south', wallId: 'wall_wing_south', kind: 'window', offset: 0.5, width: 1.2 },
   ];
 
-  const furniture: Furniture[] = [
+  const groundFurniture: Furniture[] = [
     {
       id: 'f_sofa',
       kind: 'sofa',
@@ -264,13 +550,41 @@ export function createDemoProject(): Project {
     },
   ];
 
+  const stairs: Stair[] = [
+    {
+      id: 'stair_main',
+      x: 4.55,
+      y: 1.5,
+      width: STAIR_DEFAULTS.width,
+      depth: 2.8,
+      rotation: 0,
+      steps: STAIR_DEFAULTS.steps,
+    },
+  ];
+
+  const ground: FloorPlan = {
+    id: 'floor_wutong_1',
+    name: floorName(0),
+    level: 0,
+    shapes: groundShapes,
+    walls: groundWalls,
+    openings: groundOpenings,
+    furniture: groundFurniture,
+    stairs,
+  };
+
   return {
-    schemaVersion: 1,
-    id: 'project_wutong',
-    name: '梧桐宅 · 85㎡',
+    schemaVersion: 2,
+    id: 'workspace_home',
     revision: 1,
     updatedAt: now(),
-    floor: { shapes, walls, openings },
-    furniture,
+    houses: [
+      {
+        id: 'house_wutong',
+        name: '梧桐宅',
+        floors: [ground, upperFloor()],
+      },
+      studioHouse(),
+    ],
   };
 }

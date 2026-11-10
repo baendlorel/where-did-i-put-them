@@ -2,9 +2,11 @@ import polygonClipping from 'polygon-clipping';
 import type { MultiPolygon, Polygon, Ring } from 'polygon-clipping';
 import type {
   Bounds,
+  FloorPlan,
   FloorShape,
+  FloorStats,
   Opening,
-  ProjectStats,
+  Stair,
   Vec2,
   Wall,
 } from './types';
@@ -49,6 +51,40 @@ function rotatePoint(x: number, y: number, angle: number): Vec2 {
   const cos = Math.cos(angle);
   const sin = Math.sin(angle);
   return { x: x * cos - y * sin, y: x * sin + y * cos };
+}
+
+/** Build a closed polygon for a rotated rectangle centred on (x, y). */
+export function orientedRectRing(
+  x: number,
+  y: number,
+  width: number,
+  depth: number,
+  rotation = 0,
+): Ring {
+  const hw = Math.abs(width) / 2;
+  const hd = Math.abs(depth) / 2;
+  const corners = [
+    { x: -hw, y: -hd },
+    { x: hw, y: -hd },
+    { x: hw, y: hd },
+    { x: -hw, y: hd },
+  ];
+  const ring: Ring = corners.map((corner) => {
+    const point = rotatePoint(corner.x, corner.y, rotation);
+    return [x + point.x, y + point.y] as [number, number];
+  });
+  ring.push([ring[0][0], ring[0][1]]);
+  return ring;
+}
+
+export function stairFootprint(stair: Stair, padding = 0): Ring {
+  return orientedRectRing(
+    stair.x,
+    stair.y,
+    stair.width + padding * 2,
+    stair.depth + padding * 2,
+    stair.rotation,
+  );
 }
 
 export function shapeToRing(shape: FloorShape, segments = 64): Ring {
@@ -126,7 +162,7 @@ export function areaOfPolygons(polygons: MultiPolygon): number {
 }
 
 /** Apply the ordered rectangle/ellipse operations to produce the floor footprint. */
-export function buildFloorGeometry(shapes: FloorShape[]): FloorGeometry {
+export function buildFloorGeometry(shapes: FloorShape[], extraCuts: Ring[] = []): FloorGeometry {
   let result: MultiPolygon = [];
   for (const shape of shapes) {
     if (shape.width === 0 || shape.height === 0) continue;
@@ -136,6 +172,11 @@ export function buildFloorGeometry(shapes: FloorShape[]): FloorGeometry {
       result = result.length === 0 ? [geo] : (polygonClipping.union(result, geo) as MultiPolygon);
     } else if (result.length > 0) {
       result = polygonClipping.difference(result, geo) as MultiPolygon;
+    }
+  }
+  for (const ring of extraCuts) {
+    if (result.length > 0) {
+      result = polygonClipping.difference(result, [ring] as Polygon) as MultiPolygon;
     }
   }
   result = result.filter((polygon) => polygon.length > 0 && polygon[0].length > 3);
@@ -181,13 +222,13 @@ export function wallLength(wall: Wall): number {
   return distance(wall.a, wall.b);
 }
 
-export function projectStats(project: { floor: { walls: Wall[]; shapes: FloorShape[] }; furniture: { items: unknown[] }[]; }): ProjectStats {
-  const geometry = buildFloorGeometry(project.floor.shapes);
-  const itemCount = project.furniture.reduce((sum, f) => sum + f.items.length, 0);
+export function floorStats(floor: FloorPlan): FloorStats {
+  const geometry = buildFloorGeometry(floor.shapes);
+  const itemCount = floor.furniture.reduce((sum, f) => sum + f.items.length, 0);
   return {
     area: geometry.area,
-    wallLength: project.floor.walls.reduce((sum, wall) => sum + wallLength(wall), 0),
-    furnitureCount: project.furniture.length,
+    wallLength: floor.walls.reduce((sum, wall) => sum + wallLength(wall), 0),
+    furnitureCount: floor.furniture.length,
     itemCount,
     roomCount: geometry.polygons.length,
   };

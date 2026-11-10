@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   areaOfPolygons,
   buildFloorGeometry,
-  createDemoProject,
+  createDemoWorkspace,
+  floorElevation,
   openingSegment,
-  searchProject,
+  searchWorkspace,
   shapeToRing,
   solidWallSpans,
+  stairFootprint,
 } from './index';
 import type { FloorShape } from './types';
 
@@ -51,6 +53,15 @@ describe('floor boolean geometry', () => {
     expect(areaOfPolygons([[ring]])).toBeGreaterThan(5.8);
     expect(areaOfPolygons([[ring]])).toBeLessThan(6.3);
   });
+
+  it('cuts a stairwell out of the upper floor slab', () => {
+    const stair = { id: 's', x: 4.5, y: 2, width: 1.2, depth: 3, rotation: 0, steps: 14 };
+    const base = buildFloorGeometry([rect('a', 0, 0, 8, 6, 'union')]);
+    const withStair = buildFloorGeometry([rect('a', 0, 0, 8, 6, 'union')], [stairFootprint(stair, 0.04)]);
+    expect(base.area).toBeCloseTo(48, 5);
+    expect(withStair.area).toBeLessThan(base.area);
+    expect(withStair.polygons[0].length).toBe(2);
+  });
 });
 
 describe('walls and openings', () => {
@@ -73,18 +84,44 @@ describe('walls and openings', () => {
   });
 });
 
+describe('multi-storey demo', () => {
+  it('contains two houses, two floors and a staircase', () => {
+    const workspace = createDemoWorkspace();
+    expect(workspace.houses).toHaveLength(2);
+    const wutong = workspace.houses.find((house) => house.name === '梧桐宅');
+    expect(wutong?.floors).toHaveLength(2);
+    expect(wutong?.floors[0].stairs).toHaveLength(1);
+    expect(wutong?.floors[0].level).toBe(0);
+    expect(wutong?.floors[1].level).toBe(1);
+    expect(floorElevation(1)).toBeGreaterThan(floorElevation(0));
+  });
+});
+
 describe('search', () => {
-  it('finds an item inside furniture and reports its container', () => {
-    const hits = searchProject(createDemoProject(), '护照');
+  it('finds an item inside furniture and reports its house and floor', () => {
+    const hits = searchWorkspace(createDemoWorkspace(), '护照');
     expect(hits.length).toBe(1);
-    expect(hits[0].furnitureName).toBe('左侧床头柜');
-    expect(hits[0].itemName).toBe('护照');
+    expect(hits[0]).toMatchObject({
+      houseName: '梧桐宅',
+      floorName: '1F',
+      furnitureName: '左侧床头柜',
+      itemName: '护照',
+    });
+  });
+
+  it('searches across floors and houses', () => {
+    const workspace = createDemoWorkspace();
+    const upper = searchWorkspace(workspace, '暖炉');
+    expect(upper[0]).toMatchObject({ floorName: '2F', itemName: '暖炉' });
+    const otherHouse = searchWorkspace(workspace, '备用相机');
+    expect(otherHouse[0]).toMatchObject({ houseName: '河畔工作室', itemName: '备用相机' });
   });
 
   it('is case-insensitive and searches notes', () => {
-    const hits = searchProject(createDemoProject(), 'switch');
+    const workspace = createDemoWorkspace();
+    const hits = searchWorkspace(workspace, 'switch');
     expect(hits[0].itemName).toBe('Switch 游戏机');
-    const noteHits = searchProject(createDemoProject(), '顶柜');
-    expect(noteHits[0].itemName).toBe('登机箱');
+    const noteHits = searchWorkspace(workspace, '顶柜');
+    expect(noteHits.some((hit) => hit.itemName === '登机箱')).toBe(true);
   });
 });

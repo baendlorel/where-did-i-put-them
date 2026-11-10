@@ -1,15 +1,19 @@
-import type { Furniture, Project } from '@shijian/shared';
+import type { Furniture, House } from '@shijian/shared';
+import { floorElevation } from '@shijian/shared';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { buildHouse, disposeObject } from './house';
 import type { HouseBuild } from './house';
 import { createLabelTexture, createWoodTexture } from './textures';
 
+export type FloorDisplayMode = 'whole' | 'active';
+
 export interface SceneController {
-  updateProject: (project: Project) => void;
+  updateHouse: (house: House) => void;
+  setFloor: (level: number, mode: FloorDisplayMode) => void;
   setSelection: (id: string | null) => void;
   setHighlight: (id: string | null, itemName: string) => void;
-  focusOn: (x: number, y: number, zoom?: number) => void;
+  focusOn: (x: number, y: number, level?: number, zoom?: number) => void;
   resetView: () => void;
   topView: () => void;
   setCutaway: (enabled: boolean) => void;
@@ -18,7 +22,7 @@ export interface SceneController {
 }
 
 interface SceneOptions {
-  onPick?: (furnitureId: string | null) => void;
+  onPick?: (furnitureId: string | null, floorLevel?: number) => void;
 }
 
 interface CameraTween {
@@ -61,7 +65,7 @@ function buildSelection(object: THREE.Object3D): THREE.Group {
     }),
   );
   ring.rotation.x = -Math.PI / 2;
-  ring.position.set(center.x, 0.035, center.z);
+  ring.position.set(center.x, box.min.y + 0.025, center.z);
   ring.renderOrder = 4;
   group.add(ring);
   return group;
@@ -147,11 +151,13 @@ export function createScene(container: HTMLElement, options: SceneOptions = {}):
   const woodTexture = createWoodTexture(Math.min(renderer.capabilities.getMaxAnisotropy(), 8));
   const anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), 8);
 
-  let project: Project | null = null;
+  let currentHouse: House | null = null;
   let house: HouseBuild | null = null;
   let selectionId: string | null = null;
   let highlightId: string | null = null;
   let highlightItemName = '';
+  let activeLevel = 0;
+  let displayMode: FloorDisplayMode = 'whole';
   let firstBuild = true;
   let cameraTween: CameraTween | null = null;
   let cutawayEnabled = true;
@@ -167,8 +173,8 @@ export function createScene(container: HTMLElement, options: SceneOptions = {}):
   let downPoint: { x: number; y: number } | null = null;
   let hoverFrame = 0;
 
-  function rebuild(next: Project): void {
-    project = next;
+  function rebuild(next: House): void {
+    currentHouse = next;
     if (house) {
       scene.remove(house.root);
       disposeObject(house.root);
@@ -176,7 +182,9 @@ export function createScene(container: HTMLElement, options: SceneOptions = {}):
     const wallMaterial = new THREE.MeshStandardMaterial({ color: 0xf1ebdf, roughness: 0.94 });
     house = buildHouse(next, woodTexture, wallMaterial, anisotropy);
     scene.add(house.root);
-    interior.position.set(house.center.x, 3.1, house.center.z);
+    house.root.updateMatrixWorld(true);
+    interior.position.set(house.center.x, house.topHeight * 0.6, house.center.z);
+    updateFloorVisibility();
     updateSelection();
     updateHighlight();
     if (firstBuild) {
@@ -185,8 +193,21 @@ export function createScene(container: HTMLElement, options: SceneOptions = {}):
     }
   }
 
-  function updateProject(next: Project): void {
+  function updateHouse(next: House): void {
     rebuild(next);
+  }
+
+  function updateFloorVisibility(): void {
+    if (!house) return;
+    for (const floor of house.floorGroups.values()) {
+      floor.group.visible = displayMode === 'whole' || floor.level === activeLevel;
+    }
+  }
+
+  function setFloor(level: number, mode: FloorDisplayMode): void {
+    activeLevel = level;
+    displayMode = mode;
+    updateFloorVisibility();
   }
 
   function updateSelection(): void {
@@ -211,10 +232,14 @@ export function createScene(container: HTMLElement, options: SceneOptions = {}):
       return;
     }
     const object = house.furnitureObjects.get(highlightId);
-    if (!object) return;
+    if (!object) {
+      updateCountBadges();
+      return;
+    }
     const box = new THREE.Box3().setFromObject(object);
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
+    const baseY = box.min.y;
     const radius = Math.max(size.x, size.z) * 0.66 + 0.28;
 
     const ringMaterial = new THREE.MeshBasicMaterial({
@@ -226,7 +251,7 @@ export function createScene(container: HTMLElement, options: SceneOptions = {}):
     });
     const ring = new THREE.Mesh(new THREE.TorusGeometry(radius, 0.035, 8, 80), ringMaterial);
     ring.rotation.x = -Math.PI / 2;
-    ring.position.set(center.x, 0.045, center.z);
+    ring.position.set(center.x, baseY + 0.035, center.z);
     ring.userData.highlightRing = true;
     highlightGroup.add(ring);
 
@@ -241,7 +266,7 @@ export function createScene(container: HTMLElement, options: SceneOptions = {}):
       }),
     );
     halo.rotation.x = -Math.PI / 2;
-    halo.position.set(center.x, 0.04, center.z);
+    halo.position.set(center.x, baseY + 0.03, center.z);
     halo.userData.highlightHalo = true;
     highlightGroup.add(halo);
 
@@ -256,12 +281,14 @@ export function createScene(container: HTMLElement, options: SceneOptions = {}):
         blending: THREE.AdditiveBlending,
       }),
     );
-    beam.position.set(center.x, 2.3, center.z);
+    beam.position.set(center.x, baseY + 2.3, center.z);
     beam.userData.highlightBeam = true;
     highlightGroup.add(beam);
 
     if (highlightItemName) {
-      const furniture = project?.furniture.find((item: Furniture) => item.id === highlightId);
+      const furniture = currentHouse?.floors
+        .flatMap((floor) => floor.furniture)
+        .find((item: Furniture) => item.id === highlightId);
       const label = new THREE.Sprite(
         new THREE.SpriteMaterial({
           map: createLabelTexture(highlightItemName, furniture ? `在 ${furniture.name} · 点击查看` : '物品位置'),
@@ -271,9 +298,10 @@ export function createScene(container: HTMLElement, options: SceneOptions = {}):
         }),
       );
       label.scale.set(1.28, 0.36, 1);
-      label.position.set(center.x, 2.55, center.z);
+      label.position.set(center.x, baseY + 2.55, center.z);
       label.renderOrder = 20;
       label.userData.highlightLabel = true;
+      label.userData.baseY = baseY + 2.55;
       highlightGroup.add(label);
     }
     highlightGroup.visible = true;
@@ -295,13 +323,13 @@ export function createScene(container: HTMLElement, options: SceneOptions = {}):
 
   function frameHouse(animated = false): void {
     if (!house) return;
-    const target = new THREE.Vector3(house.center.x, 0.55, house.center.z);
-    const distance = Math.max(9, house.radius * 1.8);
-    const direction = new THREE.Vector3(0.58, 1.95, 0.95).normalize();
+    const target = new THREE.Vector3(house.center.x, Math.max(0.55, house.topHeight * 0.45), house.center.z);
+    const distance = Math.max(11, house.radius * 2.45, house.topHeight * 2.2);
+    const direction = new THREE.Vector3(1, 0.62, 0.95).normalize();
     const position = target.clone().add(direction.multiplyScalar(distance));
-    controls.maxDistance = Math.max(38, house.radius * 6);
+    controls.maxDistance = Math.max(44, house.radius * 7, house.topHeight * 5);
     if (animated) {
-      camera.position.copy(target.clone().add(new THREE.Vector3(0.2, 1.7, 0.3).normalize().multiplyScalar(distance * 1.55)));
+      camera.position.copy(target.clone().add(new THREE.Vector3(0.2, 1.7, 0.3).normalize().multiplyScalar(distance * 1.5)));
       tweenCamera(position, target, 900);
     } else {
       camera.position.copy(position);
@@ -322,9 +350,9 @@ export function createScene(container: HTMLElement, options: SceneOptions = {}):
     controls.enabled = false;
   }
 
-  function focusOn(x: number, y: number, zoom?: number): void {
+  function focusOn(x: number, y: number, level = 0, zoom?: number): void {
     if (!house) return;
-    const target = new THREE.Vector3(x, 0.8, y);
+    const target = new THREE.Vector3(x, floorElevation(level) + 0.8, y);
     const currentDirection = camera.position.clone().sub(controls.target);
     if (currentDirection.lengthSq() < 0.01) currentDirection.set(1, 1, 1);
     currentDirection.y = Math.max(currentDirection.y, currentDirection.length() * 0.35);
@@ -340,7 +368,9 @@ export function createScene(container: HTMLElement, options: SceneOptions = {}):
   function topView(): void {
     if (!house) return;
     const target = new THREE.Vector3(house.center.x, 0, house.center.z);
-    const position = target.clone().add(new THREE.Vector3(0.02, Math.max(11, house.radius * 3.1), 4.8));
+    const position = target.clone().add(
+      new THREE.Vector3(0.02, house.topHeight + Math.max(11, house.radius * 3.1), 4.8),
+    );
     tweenCamera(position, target, 650);
   }
 
@@ -375,7 +405,10 @@ export function createScene(container: HTMLElement, options: SceneOptions = {}):
     updateWallVisibility();
   }
 
-  function pickFurniture(clientX: number, clientY: number): string | null {
+  function pickFurniture(
+    clientX: number,
+    clientY: number,
+  ): { id: string; level?: number } | null {
     if (!house) return null;
     const rect = renderer.domElement.getBoundingClientRect();
     pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
@@ -385,7 +418,15 @@ export function createScene(container: HTMLElement, options: SceneOptions = {}):
     for (const hit of hits) {
       let current: THREE.Object3D | null = hit.object;
       while (current) {
-        if (typeof current.userData.furnitureId === 'string') return current.userData.furnitureId as string;
+        if (typeof current.userData.furnitureId === 'string') {
+          return {
+            id: current.userData.furnitureId as string,
+            level:
+              typeof current.userData.floorLevel === 'number'
+                ? (current.userData.floorLevel as number)
+                : undefined,
+          };
+        }
         current = current.parent;
       }
       return null;
@@ -402,8 +443,8 @@ export function createScene(container: HTMLElement, options: SceneOptions = {}):
     const moved = Math.hypot(event.clientX - downPoint.x, event.clientY - downPoint.y);
     downPoint = null;
     if (moved > 5) return;
-    const id = pickFurniture(event.clientX, event.clientY);
-    options.onPick?.(id);
+    const picked = pickFurniture(event.clientX, event.clientY);
+    options.onPick?.(picked?.id ?? null, picked?.level);
   }
 
   function handlePointerMove(event: PointerEvent): void {
@@ -411,8 +452,8 @@ export function createScene(container: HTMLElement, options: SceneOptions = {}):
     if (hoverFrame) return;
     hoverFrame = requestAnimationFrame(() => {
       hoverFrame = 0;
-      const id = pickFurniture(event.clientX, event.clientY);
-      renderer.domElement.style.cursor = id ? 'pointer' : 'grab';
+      const picked = pickFurniture(event.clientX, event.clientY);
+      renderer.domElement.style.cursor = picked ? 'pointer' : 'grab';
     });
   }
 
@@ -452,7 +493,8 @@ export function createScene(container: HTMLElement, options: SceneOptions = {}):
         material.opacity = 0.055 + (Math.sin(now / 330) + 1) * 0.025;
       }
       if (child.userData.highlightLabel) {
-        child.position.y = 2.55 + Math.sin(now / 640) * 0.05;
+        const baseY = typeof child.userData.baseY === 'number' ? child.userData.baseY : 2.55;
+        child.position.y = baseY + Math.sin(now / 640) * 0.05;
       }
     }
 
@@ -485,7 +527,8 @@ export function createScene(container: HTMLElement, options: SceneOptions = {}):
   }
 
   return {
-    updateProject,
+    updateHouse,
+    setFloor,
     setSelection,
     setHighlight,
     focusOn,

@@ -1,42 +1,52 @@
 import {
   FURNITURE_CATALOG,
-  createDemoProject,
+  STAIR_DEFAULTS,
+  createDemoWorkspace,
+  createFloorPlan,
   createId,
-  createStarterProject,
+  createStarterHouse,
   distance,
-  searchProject,
+  floorName,
+  searchWorkspace,
 } from '@shijian/shared';
 import type {
+  BooleanMode,
+  FloorPlan,
   Furniture,
   FurnitureKind,
+  House,
   Opening,
-  Project,
   SearchHit,
   ShapeKind,
-  BooleanMode,
+  Stair,
   StoredItem,
   Tool,
   ViewMode,
   Wall,
+  Workspace,
 } from '@shijian/shared';
 import { computed, reactive } from 'vue';
 
 export type SyncStatus = 'connecting' | 'saved' | 'saving' | 'offline' | 'error';
 
 export interface Selection {
-  kind: 'furniture' | 'wall' | 'opening';
+  kind: 'furniture' | 'wall' | 'opening' | 'stair';
   id: string;
 }
 
 export interface FocusRequest {
   x: number;
   y: number;
+  level: number;
   zoom?: number;
   token: number;
   furnitureId?: string;
 }
 
 export interface Highlight {
+  houseId: string;
+  floorId: string;
+  floorLevel: number;
   furnitureId: string;
   itemId: string | null;
   itemName: string;
@@ -50,12 +60,14 @@ export interface Toast {
 }
 
 interface WorkspaceState {
-  project: Project;
+  workspace: Workspace;
   ready: boolean;
   view: ViewMode;
   tool: Tool;
   shapeKind: ShapeKind;
   booleanMode: BooleanMode;
+  activeHouseId: string;
+  activeFloorId: string;
   selection: Selection | null;
   highlight: Highlight | null;
   focusRequest: FocusRequest | null;
@@ -71,13 +83,16 @@ interface WorkspaceState {
   redoDepth: number;
 }
 
+const demo = createDemoWorkspace();
 export const state = reactive<WorkspaceState>({
-  project: createDemoProject(),
+  workspace: demo,
   ready: false,
   view: '2d',
   tool: 'select',
   shapeKind: 'rect',
   booleanMode: 'union',
+  activeHouseId: demo.houses[0].id,
+  activeFloorId: demo.houses[0].floors[0].id,
   selection: null,
   highlight: null,
   focusRequest: null,
@@ -93,8 +108,8 @@ export const state = reactive<WorkspaceState>({
   redoDepth: 0,
 });
 
-const history: Project[] = [];
-const future: Project[] = [];
+const history: Workspace[] = [];
+const future: Workspace[] = [];
 let syncRequester: (() => void) | null = null;
 let lastCommitKey = '';
 let lastCommitAt = 0;
@@ -104,28 +119,72 @@ let toastSeq = 0;
 
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const now = () => new Date().toISOString();
-const LOCAL_KEY = 'shijian:workspace:v1';
+const LOCAL_KEY = 'shijian:workspace:v2';
+const ACTIVE_KEY = 'shijian:active:v2';
 
 function persistLocal(): void {
   try {
-    localStorage.setItem(LOCAL_KEY, JSON.stringify(state.project));
+    localStorage.setItem(LOCAL_KEY, JSON.stringify(state.workspace));
   } catch {
     // Storage can be full or unavailable; remote sync remains the source of truth.
   }
 }
 
-function readLocal(): Project | null {
+function persistActive(): void {
+  try {
+    localStorage.setItem(
+      ACTIVE_KEY,
+      JSON.stringify({ houseId: state.activeHouseId, floorId: state.activeFloorId }),
+    );
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function readLocal(): Workspace | null {
   try {
     const raw = localStorage.getItem(LOCAL_KEY);
     if (!raw) return null;
-    return JSON.parse(raw) as Project;
+    return JSON.parse(raw) as Workspace;
   } catch {
     return null;
   }
 }
 
+function readActive(): { houseId?: string; floorId?: string } | null {
+  try {
+    const raw = localStorage.getItem(ACTIVE_KEY);
+    return raw ? (JSON.parse(raw) as { houseId?: string; floorId?: string }) : null;
+  } catch {
+    return null;
+  }
+}
+
+function houseById(workspace: Workspace, id: string): House | undefined {
+  return workspace.houses.find((house) => house.id === id);
+}
+
+function floorById(house: House, id: string): FloorPlan | undefined {
+  return house.floors.find((floor) => floor.id === id);
+}
+
+function applyActiveIds(workspace: Workspace, stored?: { houseId?: string; floorId?: string } | null): void {
+  const house =
+    (stored?.houseId ? houseById(workspace, stored.houseId) : undefined) ??
+    houseById(workspace, state.activeHouseId) ??
+    workspace.houses[0];
+  if (!house) return;
+  const floor =
+    (stored?.floorId ? floorById(house, stored.floorId) : undefined) ??
+    floorById(house, state.activeFloorId) ??
+    house.floors[0];
+  if (!floor) return;
+  state.activeHouseId = house.id;
+  state.activeFloorId = floor.id;
+}
+
 function pushHistory(): void {
-  history.push(clone(state.project));
+  history.push(clone(state.workspace));
   if (history.length > 80) history.shift();
   future.length = 0;
   state.undoDepth = history.length;
@@ -147,7 +206,7 @@ export interface CommitOptions {
 }
 
 /** Apply a local edit, group rapid keystrokes into one undo step, and sync. */
-export function commit(recipe: (project: Project) => void, options: CommitOptions = {}): void {
+export function commit(recipe: (workspace: Workspace) => void, options: CommitOptions = {}): void {
   const shouldRecord = options.history !== false;
   if (shouldRecord) {
     const nowMs = Date.now();
@@ -156,35 +215,68 @@ export function commit(recipe: (project: Project) => void, options: CommitOption
     lastCommitKey = options.key ?? '';
     lastCommitAt = nowMs;
   }
-  recipe(state.project);
-  state.project.updatedAt = now();
+  recipe(state.workspace);
+  state.workspace.updatedAt = now();
   state.undoDepth = history.length;
   state.redoDepth = future.length;
   persistLocal();
+  persistActive();
   if (!options.silent) {
     state.sync = 'saving';
     syncRequester?.();
   }
 }
 
-export function replaceProject(project: Project, options: { remote?: boolean; pushUndo?: boolean } = {}): void {
+export function replaceWorkspace(
+  workspace: Workspace,
+  options: { remote?: boolean; pushUndo?: boolean; storedActive?: { houseId?: string; floorId?: string } | null } = {},
+): void {
   if (options.pushUndo) pushHistory();
-  state.project = project;
+  state.workspace = workspace;
+  applyActiveIds(workspace, options.storedActive);
   if (state.selection) {
+    const floor = activeFloor.value;
     const exists =
-      (state.selection.kind === 'furniture' && project.furniture.some((f) => f.id === state.selection?.id)) ||
-      (state.selection.kind === 'wall' && project.floor.walls.some((w) => w.id === state.selection?.id)) ||
-      (state.selection.kind === 'opening' && project.floor.openings.some((o) => o.id === state.selection?.id));
+      (state.selection.kind === 'furniture' && floor?.furniture.some((f) => f.id === state.selection?.id)) ||
+      (state.selection.kind === 'wall' && floor?.walls.some((w) => w.id === state.selection?.id)) ||
+      (state.selection.kind === 'opening' && floor?.openings.some((o) => o.id === state.selection?.id)) ||
+      (state.selection.kind === 'stair' && floor?.stairs.some((s) => s.id === state.selection?.id));
     if (!exists) state.selection = null;
   }
-  if (state.highlight && !project.furniture.some((f) => f.id === state.highlight?.furnitureId)) {
-    state.highlight = null;
+  if (state.highlight) {
+    const hHouse = houseById(workspace, state.highlight.houseId);
+    const hFloor = hHouse ? floorById(hHouse, state.highlight.floorId) : undefined;
+    if (!hFloor?.furniture.some((furniture) => furniture.id === state.highlight?.furnitureId)) {
+      state.highlight = null;
+    }
   }
   persistLocal();
+  persistActive();
   if (options.remote) {
     state.undoDepth = history.length;
     state.redoDepth = future.length;
   }
+}
+
+export const activeHouse = computed<House>(() => {
+  return houseById(state.workspace, state.activeHouseId) ?? state.workspace.houses[0];
+});
+
+export const activeFloor = computed<FloorPlan>(() => {
+  const house = activeHouse.value;
+  return floorById(house, state.activeFloorId) ?? house.floors[0];
+});
+
+export const activeFloorIndex = computed(() =>
+  Math.max(0, activeHouse.value.floors.findIndex((floor) => floor.id === activeFloor.value.id)),
+);
+
+function mutateFloor(recipe: (floor: FloorPlan, house: House) => void, options: CommitOptions = {}): void {
+  commit((workspace) => {
+    const house = houseById(workspace, state.activeHouseId) ?? workspace.houses[0];
+    const floor = floorById(house, state.activeFloorId) ?? house.floors[0];
+    if (floor) recipe(floor, house);
+  }, options);
 }
 
 export function undo(): void {
@@ -193,8 +285,8 @@ export function undo(): void {
     pushToast('没有可以撤销的操作', 'info');
     return;
   }
-  future.push(clone(state.project));
-  replaceProject(previous);
+  future.push(clone(state.workspace));
+  replaceWorkspace(previous);
   state.undoDepth = history.length;
   state.redoDepth = future.length;
   state.sync = 'saving';
@@ -208,8 +300,8 @@ export function redo(): void {
     pushToast('没有可以重做的操作', 'info');
     return;
   }
-  history.push(clone(state.project));
-  replaceProject(next);
+  history.push(clone(state.workspace));
+  replaceWorkspace(next);
   state.undoDepth = history.length;
   state.redoDepth = future.length;
   state.sync = 'saving';
@@ -252,25 +344,175 @@ export function selectOpening(id: string | null): void {
   state.selection = id ? { kind: 'opening', id } : null;
 }
 
+export function selectStair(id: string | null): void {
+  state.selection = id ? { kind: 'stair', id } : null;
+}
+
 export const selectedFurniture = computed<Furniture | null>(() => {
   if (state.selection?.kind !== 'furniture') return null;
-  return state.project.furniture.find((furniture) => furniture.id === state.selection?.id) ?? null;
+  return activeFloor.value.furniture.find((furniture) => furniture.id === state.selection?.id) ?? null;
 });
 
 export const selectedWall = computed<Wall | null>(() => {
   if (state.selection?.kind !== 'wall') return null;
-  return state.project.floor.walls.find((wall) => wall.id === state.selection?.id) ?? null;
+  return activeFloor.value.walls.find((wall) => wall.id === state.selection?.id) ?? null;
 });
 
 export const selectedOpening = computed<Opening | null>(() => {
   if (state.selection?.kind !== 'opening') return null;
-  return state.project.floor.openings.find((opening) => opening.id === state.selection?.id) ?? null;
+  return activeFloor.value.openings.find((opening) => opening.id === state.selection?.id) ?? null;
+});
+
+export const selectedStair = computed<Stair | null>(() => {
+  if (state.selection?.kind !== 'stair') return null;
+  return activeFloor.value.stairs.find((stair) => stair.id === state.selection?.id) ?? null;
 });
 
 export const highlightedFurniture = computed<Furniture | null>(() => {
   if (!state.highlight) return null;
-  return state.project.furniture.find((furniture) => furniture.id === state.highlight?.furnitureId) ?? null;
+  const house = houseById(state.workspace, state.highlight.houseId);
+  const floor = house ? floorById(house, state.highlight.floorId) : undefined;
+  return floor?.furniture.find((furniture) => furniture.id === state.highlight?.furnitureId) ?? null;
 });
+
+export function selectHouse(id: string): void {
+  const house = houseById(state.workspace, id);
+  if (!house) return;
+  state.activeHouseId = house.id;
+  state.activeFloorId = house.floors[0]?.id ?? '';
+  state.selection = null;
+  state.highlight = null;
+  state.focusRequest = null;
+  persistActive();
+}
+
+export function selectFloor(id: string): void {
+  const floor = floorById(activeHouse.value, id);
+  if (!floor) return;
+  state.activeFloorId = floor.id;
+  state.selection = null;
+  state.highlight = null;
+  state.focusRequest = null;
+  persistActive();
+}
+
+export function createHouse(name = '新的家'): House {
+  const house = createStarterHouse(name);
+  commit((workspace) => {
+    workspace.houses.push(house);
+  });
+  state.activeHouseId = house.id;
+  state.activeFloorId = house.floors[0].id;
+  state.selection = null;
+  state.highlight = null;
+  state.focusRequest = null;
+  persistActive();
+  pushToast(`已创建「${house.name}」`, 'success');
+  return house;
+}
+
+export function renameHouse(name: string): void {
+  const trimmed = name.trim().slice(0, 120);
+  if (!trimmed) return;
+  const houseId = state.activeHouseId;
+  commit((workspace) => {
+    const house = houseById(workspace, houseId);
+    if (house) house.name = trimmed;
+  }, { key: `house-name-${houseId}` });
+}
+
+export function deleteHouse(id: string): void {
+  if (state.workspace.houses.length <= 1) {
+    pushToast('至少需要保留一栋房子', 'warn');
+    return;
+  }
+  const house = houseById(state.workspace, id);
+  if (!house) return;
+  commit((workspace) => {
+    workspace.houses = workspace.houses.filter((item) => item.id !== id);
+  });
+  if (state.activeHouseId === id) {
+    const next = state.workspace.houses[0];
+    state.activeHouseId = next.id;
+    state.activeFloorId = next.floors[0].id;
+  }
+  state.selection = null;
+  state.highlight = null;
+  state.focusRequest = null;
+  persistActive();
+  pushToast(`已删除「${house.name}」`, 'info');
+}
+
+export function addFloor(mode: 'blank' | 'copy' = 'copy'): FloorPlan {
+  const houseId = state.activeHouseId;
+  const level = Math.max(...activeHouse.value.floors.map((floor) => floor.level), -1) + 1;
+  if (level >= 16) {
+    pushToast('一栋房子最多 16 层', 'warn');
+    return activeFloor.value;
+  }
+  const base = activeFloor.value;
+  const newFloor = createFloorPlan(level);
+  if (mode === 'copy') {
+    const wallIds = new Map<string, string>();
+    newFloor.shapes = base.shapes.map((shape) => ({ ...shape, id: createId('shape') }));
+    newFloor.walls = base.walls.map((wall) => {
+      const id = createId('wall');
+      wallIds.set(wall.id, id);
+      return { ...wall, id, a: { ...wall.a }, b: { ...wall.b } };
+    });
+    newFloor.openings = base.openings
+      .map((opening) => {
+        const wallId = wallIds.get(opening.wallId);
+        return wallId ? { ...opening, id: createId('opening'), wallId } : null;
+      })
+      .filter((opening): opening is Opening => Boolean(opening));
+  }
+  commit((workspace) => {
+    const house = houseById(workspace, houseId);
+    if (house) house.floors.push(newFloor);
+  });
+  state.activeFloorId = newFloor.id;
+  state.selection = null;
+  state.highlight = null;
+  state.focusRequest = null;
+  persistActive();
+  pushToast(
+    mode === 'copy'
+      ? `已添加 ${newFloor.name}，复制了地面与墙体`
+      : `已添加空白楼层 ${newFloor.name}`,
+    'success',
+  );
+  return newFloor;
+}
+
+export function deleteFloor(id: string): void {
+  const house = activeHouse.value;
+  if (house.floors.length <= 1) {
+    pushToast('每栋房子至少需要保留一层', 'warn');
+    return;
+  }
+  const target = house.floors.find((floor) => floor.id === id);
+  if (!target) return;
+  const remaining = house.floors.filter((floor) => floor.id !== id);
+  const next = remaining[Math.max(0, Math.min(remaining.length - 1, target.level - 1))] ?? remaining[0];
+  commit((workspace) => {
+    const current = houseById(workspace, house.id);
+    if (!current) return;
+    const removedLevel = target.level;
+    const lower = current.floors.find((floor) => floor.level === removedLevel - 1);
+    if (lower) lower.stairs = [];
+    current.floors = current.floors
+      .filter((floor) => floor.id !== id)
+      .sort((a, b) => a.level - b.level)
+      .map((floor, index) => ({ ...floor, level: index, name: floorName(index) }));
+  });
+  state.activeFloorId = next.id;
+  state.selection = null;
+  state.highlight = null;
+  state.focusRequest = null;
+  persistActive();
+  pushToast(`已删除 ${target.name}`, 'info');
+}
 
 export function addShape(shape: {
   kind: ShapeKind;
@@ -281,9 +523,9 @@ export function addShape(shape: {
   rotation?: number;
 }): void {
   const mode = state.booleanMode;
-  commit(
-    (project) => {
-      project.floor.shapes.push({
+  mutateFloor(
+    (floor) => {
+      floor.shapes.push({
         id: createId('shape'),
         kind: shape.kind,
         x: shape.x,
@@ -301,17 +543,17 @@ export function addShape(shape: {
 
 export function addWall(a: { x: number; y: number }, b: { x: number; y: number }, thickness = 0.18): void {
   const wall: Wall = { id: createId('wall'), a: { ...a }, b: { ...b }, thickness };
-  commit((project) => project.floor.walls.push(wall), { key: 'wall' });
+  mutateFloor((floor) => floor.walls.push(wall), { key: 'wall' });
 }
 
 export function addOpening(wallId: string, kind: Opening['kind'], offset: number): void {
-  const wall = state.project.floor.walls.find((item) => item.id === wallId);
+  const wall = activeFloor.value.walls.find((item) => item.id === wallId);
   if (!wall) return;
   const width = kind === 'door' ? 0.9 : 1.4;
   const wallLen = distance(wall.a, wall.b);
-  commit(
-    (project) => {
-      project.floor.openings.push({
+  mutateFloor(
+    (floor) => {
+      floor.openings.push({
         id: createId(kind),
         wallId,
         kind,
@@ -326,7 +568,7 @@ export function addOpening(wallId: string, kind: Opening['kind'], offset: number
 
 export function findWallAt(point: { x: number; y: number }, maxDistance = 0.75): { wall: Wall; offset: number } | null {
   let best: { wall: Wall; offset: number; score: number } | null = null;
-  for (const wall of state.project.floor.walls) {
+  for (const wall of activeFloor.value.walls) {
     const dx = wall.b.x - wall.a.x;
     const dy = wall.b.y - wall.a.y;
     const lenSq = dx * dx + dy * dy;
@@ -356,7 +598,7 @@ export function addFurniture(kind: FurnitureKind, x: number, y: number): Furnitu
     color: spec.color,
     items: [],
   };
-  commit((project) => project.furniture.push(furniture), { key: 'furniture' });
+  mutateFloor((floor) => floor.furniture.push(furniture), { key: 'furniture' });
   state.selection = { kind: 'furniture', id: furniture.id };
   state.tool = 'select';
   pushToast(`已放置${spec.label}，可在右侧添加物品`, 'success');
@@ -364,9 +606,9 @@ export function addFurniture(kind: FurnitureKind, x: number, y: number): Furnitu
 }
 
 export function updateFurniture(id: string, patch: Partial<Furniture>, key?: string): void {
-  commit(
-    (project) => {
-      const furniture = project.furniture.find((item) => item.id === id);
+  mutateFloor(
+    (floor) => {
+      const furniture = floor.furniture.find((item) => item.id === id);
       if (furniture) Object.assign(furniture, patch);
     },
     { key },
@@ -374,9 +616,9 @@ export function updateFurniture(id: string, patch: Partial<Furniture>, key?: str
 }
 
 export function moveFurniture(id: string, x: number, y: number): void {
-  commit(
-    (project) => {
-      const furniture = project.furniture.find((item) => item.id === id);
+  mutateFloor(
+    (floor) => {
+      const furniture = floor.furniture.find((item) => item.id === id);
       if (furniture) {
         furniture.x = x;
         furniture.y = y;
@@ -391,8 +633,8 @@ export function rotateFurniture(id: string, rotation: number, key?: string): voi
 }
 
 export function deleteFurniture(id: string): void {
-  commit((project) => {
-    project.furniture = project.furniture.filter((item) => item.id !== id);
+  mutateFloor((floor) => {
+    floor.furniture = floor.furniture.filter((item) => item.id !== id);
   });
   if (state.selection?.id === id) state.selection = null;
   if (state.highlight?.furnitureId === id) state.highlight = null;
@@ -400,9 +642,9 @@ export function deleteFurniture(id: string): void {
 }
 
 export function updateWall(id: string, patch: Partial<Wall>, key?: string): void {
-  commit(
-    (project) => {
-      const wall = project.floor.walls.find((item) => item.id === id);
+  mutateFloor(
+    (floor) => {
+      const wall = floor.walls.find((item) => item.id === id);
       if (wall) Object.assign(wall, patch);
     },
     { key },
@@ -410,18 +652,18 @@ export function updateWall(id: string, patch: Partial<Wall>, key?: string): void
 }
 
 export function deleteWall(id: string): void {
-  commit((project) => {
-    project.floor.walls = project.floor.walls.filter((wall) => wall.id !== id);
-    project.floor.openings = project.floor.openings.filter((opening) => opening.wallId !== id);
+  mutateFloor((floor) => {
+    floor.walls = floor.walls.filter((wall) => wall.id !== id);
+    floor.openings = floor.openings.filter((opening) => opening.wallId !== id);
   });
   if (state.selection?.kind === 'wall' && state.selection.id === id) state.selection = null;
   pushToast('墙体及其门窗已删除', 'info');
 }
 
 export function updateOpening(id: string, patch: Partial<Opening>, key?: string): void {
-  commit(
-    (project) => {
-      const opening = project.floor.openings.find((item) => item.id === id);
+  mutateFloor(
+    (floor) => {
+      const opening = floor.openings.find((item) => item.id === id);
       if (opening) Object.assign(opening, patch);
     },
     { key },
@@ -429,18 +671,60 @@ export function updateOpening(id: string, patch: Partial<Opening>, key?: string)
 }
 
 export function deleteOpening(id: string): void {
-  commit((project) => {
-    project.floor.openings = project.floor.openings.filter((opening) => opening.id !== id);
+  mutateFloor((floor) => {
+    floor.openings = floor.openings.filter((opening) => opening.id !== id);
   });
   if (state.selection?.kind === 'opening' && state.selection.id === id) state.selection = null;
   pushToast('门窗已删除', 'info');
+}
+
+export function addStair(x: number, y: number): Stair {
+  const stair: Stair = {
+    id: createId('stair'),
+    x,
+    y,
+    width: STAIR_DEFAULTS.width,
+    depth: STAIR_DEFAULTS.depth,
+    rotation: 0,
+    steps: STAIR_DEFAULTS.steps,
+  };
+  mutateFloor((floor) => floor.stairs.push(stair), { key: 'stair' });
+  state.selection = { kind: 'stair', id: stair.id };
+  state.tool = 'select';
+  const hasUpper = activeHouse.value.floors.some((floor) => floor.level === activeFloor.value.level + 1);
+  pushToast(
+    hasUpper
+      ? '已放置楼梯，通向上一层'
+      : '已放置楼梯；当前是顶层，可先添加楼层',
+    hasUpper ? 'success' : 'warn',
+  );
+  return stair;
+}
+
+export function updateStair(id: string, patch: Partial<Stair>, key?: string): void {
+  mutateFloor(
+    (floor) => {
+      const stair = floor.stairs.find((item) => item.id === id);
+      if (stair) Object.assign(stair, patch);
+    },
+    { key },
+  );
+}
+
+export function deleteStair(id: string): void {
+  mutateFloor((floor) => {
+    floor.stairs = floor.stairs.filter((stair) => stair.id !== id);
+  });
+  if (state.selection?.kind === 'stair' && state.selection.id === id) state.selection = null;
+  pushToast('楼梯已删除', 'info');
 }
 
 export function deleteSelection(): void {
   if (!state.selection) return;
   if (state.selection.kind === 'furniture') deleteFurniture(state.selection.id);
   else if (state.selection.kind === 'wall') deleteWall(state.selection.id);
-  else deleteOpening(state.selection.id);
+  else if (state.selection.kind === 'opening') deleteOpening(state.selection.id);
+  else deleteStair(state.selection.id);
 }
 
 export function addItem(furnitureId: string, name: string, quantity = 1, note = ''): StoredItem | null {
@@ -452,8 +736,8 @@ export function addItem(furnitureId: string, name: string, quantity = 1, note = 
     quantity: Math.max(1, Math.round(quantity)),
     note: note.slice(0, 500),
   };
-  commit((project) => {
-    const furniture = project.furniture.find((entry) => entry.id === furnitureId);
+  mutateFloor((floor) => {
+    const furniture = floor.furniture.find((entry) => entry.id === furnitureId);
     if (furniture) furniture.items.push(item);
   });
   pushToast(`已放入「${item.name}」`, 'success');
@@ -466,9 +750,9 @@ export function updateItem(
   patch: Partial<StoredItem>,
   key?: string,
 ): void {
-  commit(
-    (project) => {
-      const furniture = project.furniture.find((entry) => entry.id === furnitureId);
+  mutateFloor(
+    (floor) => {
+      const furniture = floor.furniture.find((entry) => entry.id === furnitureId);
       const item = furniture?.items.find((entry) => entry.id === itemId);
       if (item) {
         Object.assign(item, patch);
@@ -480,27 +764,33 @@ export function updateItem(
 }
 
 export function deleteItem(furnitureId: string, itemId: string): void {
-  commit((project) => {
-    const furniture = project.furniture.find((entry) => entry.id === furnitureId);
+  mutateFloor((floor) => {
+    const furniture = floor.furniture.find((entry) => entry.id === furnitureId);
     if (furniture) furniture.items = furniture.items.filter((item) => item.id !== itemId);
   });
   pushToast('物品已移出', 'info');
 }
 
 export function rotateSelected(delta: number): void {
-  if (state.selection?.kind !== 'furniture') return;
-  const furniture = selectedFurniture.value;
-  if (!furniture) return;
-  rotateFurniture(furniture.id, furniture.rotation + delta, `rotate-key-${furniture.id}`);
+  if (state.selection?.kind === 'furniture') {
+    const furniture = selectedFurniture.value;
+    if (furniture) rotateFurniture(furniture.id, furniture.rotation + delta, `rotate-key-${furniture.id}`);
+    return;
+  }
+  if (state.selection?.kind === 'stair') {
+    const stair = selectedStair.value;
+    if (stair) updateStair(stair.id, { rotation: stair.rotation + delta }, `rotate-stair-${stair.id}`);
+  }
 }
 
 export function focusFurniture(id: string, zoom = 110): void {
-  const furniture = state.project.furniture.find((item) => item.id === id);
+  const furniture = activeFloor.value.furniture.find((item) => item.id === id);
   if (!furniture) return;
   state.selection = { kind: 'furniture', id };
   state.focusRequest = {
     x: furniture.x,
     y: furniture.y,
+    level: activeFloor.value.level,
     zoom,
     token: ++focusSeq,
     furnitureId: id,
@@ -508,10 +798,10 @@ export function focusFurniture(id: string, zoom = 110): void {
 }
 
 export function requestFit(): void {
-  const furniture = state.project.furniture[0];
   state.focusRequest = {
-    x: furniture?.x ?? 5,
-    y: furniture?.y ?? 3.5,
+    x: 4,
+    y: 3,
+    level: activeFloor.value.level,
     token: ++focusSeq,
     zoom: undefined,
   };
@@ -519,44 +809,58 @@ export function requestFit(): void {
 
 export function revealSearchHit(hit: SearchHit): void {
   state.searchOpen = false;
+  state.activeHouseId = hit.houseId;
+  state.activeFloorId = hit.floorId;
   state.selection = { kind: 'furniture', id: hit.furnitureId };
   state.highlight = {
+    houseId: hit.houseId,
+    floorId: hit.floorId,
+    floorLevel: hit.floorLevel,
     furnitureId: hit.furnitureId,
     itemId: hit.itemId,
     itemName: hit.itemId ? hit.itemName : hit.furnitureName,
     token: ++highlightSeq,
   };
-  const furniture = state.project.furniture.find((item) => item.id === hit.furnitureId);
+  const house = houseById(state.workspace, hit.houseId);
+  const floor = house ? floorById(house, hit.floorId) : undefined;
+  const furniture = floor?.furniture.find((item) => item.id === hit.furnitureId);
   if (furniture) {
     state.focusRequest = {
       x: furniture.x,
       y: furniture.y,
+      level: hit.floorLevel,
       zoom: 120,
       token: ++focusSeq,
       furnitureId: furniture.id,
     };
   }
+  persistActive();
   pushToast(
     hit.itemId
-      ? `「${hit.itemName}」在 ${hit.furnitureName}`
-      : `已定位 ${hit.furnitureName}`,
+      ? `「${hit.itemName}」在 ${hit.houseName} · ${hit.floorName} · ${hit.furnitureName}`
+      : `已定位 ${hit.houseName} · ${hit.floorName} · ${hit.furnitureName}`,
     'success',
   );
 }
 
 export function highlightStoredItem(furnitureId: string, itemId: string, itemName: string): void {
+  const floor = activeFloor.value;
   state.selection = { kind: 'furniture', id: furnitureId };
   state.highlight = {
+    houseId: activeHouse.value.id,
+    floorId: floor.id,
+    floorLevel: floor.level,
     furnitureId,
     itemId,
     itemName,
     token: ++highlightSeq,
   };
-  const furniture = state.project.furniture.find((item) => item.id === furnitureId);
+  const furniture = floor.furniture.find((item) => item.id === furnitureId);
   if (furniture) {
     state.focusRequest = {
       x: furniture.x,
       y: furniture.y,
+      level: floor.level,
       zoom: 120,
       token: ++focusSeq,
       furnitureId,
@@ -582,7 +886,7 @@ export function toggleHelp(open = !state.helpOpen): void {
 
 export const searchHits = computed<SearchHit[]>(() => {
   if (!state.searchQuery.trim()) return [];
-  return searchProject(state.project, state.searchQuery);
+  return searchWorkspace(state.workspace, state.searchQuery);
 });
 
 export function setSearchQuery(query: string): void {
@@ -596,7 +900,7 @@ export function pushToast(text: string, tone: Toast['tone'] = 'info'): void {
   window.setTimeout(() => {
     const index = state.toasts.findIndex((toast) => toast.id === id);
     if (index >= 0) state.toasts.splice(index, 1);
-  }, 3200);
+  }, 3600);
 }
 
 export function dismissToast(id: string): void {
@@ -605,8 +909,8 @@ export function dismissToast(id: string): void {
 }
 
 export function markSaved(revision: number, updatedAt: string): void {
-  state.project.revision = revision;
-  state.project.updatedAt = updatedAt;
+  state.workspace.revision = revision;
+  state.workspace.updatedAt = updatedAt;
   state.sync = 'saved';
   state.lastSavedAt = updatedAt;
 }
@@ -621,14 +925,14 @@ export function setClients(count: number): void {
 
 export async function loadWorkspace(): Promise<void> {
   try {
-    const response = await fetch('/api/project', { headers: { accept: 'application/json' } });
+    const response = await fetch('/api/workspace', { headers: { accept: 'application/json' } });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const project = (await response.json()) as Project;
-    replaceProject(project);
+    const workspace = (await response.json()) as Workspace;
+    replaceWorkspace(workspace, { storedActive: readActive() });
     state.sync = 'saved';
   } catch {
     const local = readLocal();
-    replaceProject(local ?? createDemoProject());
+    replaceWorkspace(local ?? createDemoWorkspace(), { storedActive: readActive() });
     state.sync = 'offline';
     pushToast('未连接到同步服务，当前修改会保存在本机', 'warn');
   } finally {
@@ -636,14 +940,8 @@ export async function loadWorkspace(): Promise<void> {
   }
 }
 
-export function startNewProject(): void {
-  replaceProject(createStarterProject('新的家'), { pushUndo: true });
-  state.selection = null;
-  state.highlight = null;
-  setTool('select');
-  state.sync = 'saving';
-  syncRequester?.();
-  pushToast('已创建 8 × 6 m 的新空间，撤销可恢复上一版', 'success');
+export function startNewHouse(): House {
+  return createHouse('新的家');
 }
 
 export function setZoom(zoom: number): void {
@@ -653,9 +951,13 @@ export function setZoom(zoom: number): void {
 export function useWorkspace() {
   return {
     state,
+    activeHouse,
+    activeFloor,
+    activeFloorIndex,
     selectedFurniture,
     selectedWall,
     selectedOpening,
+    selectedStair,
     highlightedFurniture,
     searchHits,
   };

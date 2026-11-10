@@ -66,6 +66,13 @@ export const FURNITURE_CATALOG: Record<FurnitureKind, FurnitureSpec> = {
 
 export const FURNITURE_KINDS = Object.keys(FURNITURE_CATALOG) as FurnitureKind[];
 
+export const STAIR_DEFAULTS = {
+  label: '楼梯',
+  width: 1.15,
+  depth: 3.2,
+  steps: 14,
+};
+
 export const FURNITURE_COLORS = [
   '#b4825f',
   '#9d6b53',

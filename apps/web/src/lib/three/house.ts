@@ -1,11 +1,14 @@
 import {
+  FLOOR_HEIGHT,
   FURNITURE_CATALOG,
   buildFloorGeometry,
+  floorElevation,
   openingSegment,
   solidWallSpans,
+  stairFootprint,
   wallLength,
 } from '@shijian/shared';
-import type { Opening, Project, Wall } from '@shijian/shared';
+import type { FloorPlan, House, Opening, Stair, Wall } from '@shijian/shared';
 import * as THREE from 'three';
 import { buildFurniture } from './furniture';
 import { createCountTexture } from './textures';
@@ -14,14 +17,23 @@ export interface WallVisual {
   group: THREE.Group;
   center: THREE.Vector3;
   exterior: boolean;
+  level: number;
+}
+
+export interface FloorVisual {
+  level: number;
+  elevation: number;
+  group: THREE.Group;
 }
 
 export interface HouseBuild {
   root: THREE.Group;
   furnitureObjects: Map<string, THREE.Object3D>;
   wallVisuals: WallVisual[];
+  floorGroups: Map<number, FloorVisual>;
   center: THREE.Vector3;
   radius: number;
+  topHeight: number;
 }
 
 function disposeObject(root: THREE.Object3D): void {
@@ -46,9 +58,9 @@ function disposeObject(root: THREE.Object3D): void {
   });
 }
 
-function floorMeshes(project: Project, wood: THREE.Texture): THREE.Group {
+function floorMeshes(floor: FloorPlan, wood: THREE.Texture, extraCuts = [] as [number, number][][]): THREE.Group {
   const group = new THREE.Group();
-  const geometry = buildFloorGeometry(project.floor.shapes);
+  const geometry = buildFloorGeometry(floor.shapes, extraCuts);
   if (geometry.polygons.length === 0) return group;
 
   const floorTexture = wood.clone();
@@ -60,6 +72,7 @@ function floorMeshes(project: Project, wood: THREE.Texture): THREE.Group {
     metalness: 0,
   });
   const sideMaterial = new THREE.MeshStandardMaterial({ color: 0xb8a88e, roughness: 0.92 });
+  const undersideMaterial = new THREE.MeshStandardMaterial({ color: 0xd8cbb5, roughness: 0.95 });
 
   for (const polygon of geometry.polygons) {
     const outer = polygon[0];
@@ -76,7 +89,7 @@ function floorMeshes(project: Project, wood: THREE.Texture): THREE.Group {
       curveSegments: 24,
     });
     extrude.rotateX(Math.PI / 2);
-    const mesh = new THREE.Mesh(extrude, [topMaterial, sideMaterial]);
+    const mesh = new THREE.Mesh(extrude, [topMaterial, undersideMaterial, sideMaterial]);
     mesh.receiveShadow = true;
     mesh.castShadow = false;
     group.add(mesh);
@@ -257,6 +270,56 @@ function doorMesh(wall: Wall, opening: Opening): THREE.Group {
   return group;
 }
 
+function stairMesh(stair: Stair): THREE.Group {
+  const group = new THREE.Group();
+  group.position.set(stair.x, 0, stair.y);
+  group.rotation.y = -stair.rotation;
+  group.userData.stairId = stair.id;
+
+  const wood = new THREE.MeshStandardMaterial({ color: 0xb08a62, roughness: 0.52 });
+  const edge = new THREE.MeshStandardMaterial({ color: 0x8e6b48, roughness: 0.6 });
+  const brass = new THREE.MeshStandardMaterial({ color: 0xb49460, roughness: 0.35, metalness: 0.5 });
+  const run = stair.depth / stair.steps;
+  const rise = FLOOR_HEIGHT / stair.steps;
+
+  for (let i = 0; i < stair.steps; i += 1) {
+    const height = (i + 1) * rise;
+    const step = new THREE.Mesh(
+      new THREE.BoxGeometry(stair.width, height, run * 0.96),
+      i % 2 === 0 ? wood : edge,
+    );
+    step.position.set(0, height / 2, stair.depth / 2 - run * (i + 0.5));
+    step.castShadow = true;
+    step.receiveShadow = true;
+    group.add(step);
+  }
+
+  const stringerLength = Math.hypot(stair.depth, FLOOR_HEIGHT);
+  const railAngle = Math.atan2(FLOOR_HEIGHT, stair.depth);
+  for (const side of [-1, 1]) {
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.035, stringerLength), brass);
+    rail.position.set(side * (stair.width / 2 - 0.04), FLOOR_HEIGHT / 2 + 0.9, 0);
+    rail.rotation.x = railAngle;
+    rail.castShadow = true;
+    group.add(rail);
+
+    for (let i = 0; i <= stair.steps; i += 4) {
+      const y = i * rise;
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.9, 0.028), brass);
+      post.position.set(side * (stair.width / 2 - 0.04), y + 0.45, stair.depth / 2 - run * i);
+      post.castShadow = true;
+      group.add(post);
+    }
+  }
+
+  const base = new THREE.Mesh(new THREE.BoxGeometry(stair.width, 0.035, stair.depth), edge);
+  base.position.y = 0.017;
+  base.receiveShadow = true;
+  group.add(base);
+
+  return group;
+}
+
 function addCountBadge(group: THREE.Group, count: number, height: number): void {
   if (count <= 0) return;
   const sprite = new THREE.Sprite(
@@ -297,8 +360,12 @@ function isExteriorWall(wall: Wall, rings: [number, number][][]): boolean {
   return nearest <= wall.thickness / 2 + 0.16;
 }
 
+/**
+ * Build the whole house, one group per storey. Stair openings are subtracted
+ * from the slab above because the stairs rise to the next elevation.
+ */
 export function buildHouse(
-  project: Project,
+  house: House,
   wood: THREE.Texture,
   wallMaterial: THREE.Material,
   anisotropy: number,
@@ -306,50 +373,92 @@ export function buildHouse(
   const root = new THREE.Group();
   const furnitureObjects = new Map<string, THREE.Object3D>();
   const wallVisuals: WallVisual[] = [];
-  const geometry = buildFloorGeometry(project.floor.shapes);
-  const rings = geometry.polygons.map((polygon) => polygon[0] as [number, number][]);
-  root.add(floorMeshes(project, wood));
-
+  const floorGroups = new Map<number, FloorVisual>();
+  const floors = [...house.floors].sort((a, b) => a.level - b.level);
   const baseboardMaterial = new THREE.MeshStandardMaterial({ color: 0xe4dbcb, roughness: 0.7 });
-  const openingsByWall = new Map<string, Opening[]>();
-  for (const opening of project.floor.openings) {
-    const list = openingsByWall.get(opening.wallId) ?? [];
-    list.push(opening);
-    openingsByWall.set(opening.wallId, list);
-  }
 
-  for (const wall of project.floor.walls) {
-    const wallGroup = new THREE.Group();
-    wallGroup.name = `wall:${wall.id}`;
-    wallGroup.add(wallIntervalBoxes(wall, openingsByWall.get(wall.id) ?? [], wallMaterial, baseboardMaterial));
-    for (const opening of openingsByWall.get(wall.id) ?? []) {
-      wallGroup.add(opening.kind === 'window' ? windowMesh(wall, opening) : doorMesh(wall, opening));
+  let bounds: { minX: number; minY: number; maxX: number; maxY: number } | null = null;
+  let topHeight = FLOOR_HEIGHT;
+
+  for (const floor of floors) {
+    const floorGroup = new THREE.Group();
+    const elevation = floorElevation(floor.level);
+    floorGroup.position.y = elevation;
+    floorGroup.name = `floor:${floor.level}`;
+
+    const geometry = buildFloorGeometry(floor.shapes);
+    if (geometry.polygons.length > 0) {
+      bounds = bounds
+        ? {
+            minX: Math.min(bounds.minX, geometry.bounds.minX),
+            minY: Math.min(bounds.minY, geometry.bounds.minY),
+            maxX: Math.max(bounds.maxX, geometry.bounds.maxX),
+            maxY: Math.max(bounds.maxY, geometry.bounds.maxY),
+          }
+        : { ...geometry.bounds };
     }
-    root.add(wallGroup);
-    wallVisuals.push({
-      group: wallGroup,
-      center: new THREE.Vector3((wall.a.x + wall.b.x) / 2, 0, (wall.a.y + wall.b.y) / 2),
-      exterior: isExteriorWall(wall, rings),
-    });
+    const rings = geometry.polygons.map((polygon) => polygon[0] as [number, number][]);
+    const lower = floors.find((entry) => entry.level === floor.level - 1);
+    const extraCuts = lower ? lower.stairs.map((stair) => stairFootprint(stair, 0.04)) : [];
+
+    floorGroup.add(floorMeshes(floor, wood, extraCuts));
+
+    const openingsByWall = new Map<string, Opening[]>();
+    for (const opening of floor.openings) {
+      const list = openingsByWall.get(opening.wallId) ?? [];
+      list.push(opening);
+      openingsByWall.set(opening.wallId, list);
+    }
+
+    for (const wall of floor.walls) {
+      const wallGroup = new THREE.Group();
+      wallGroup.name = `wall:${floor.level}:${wall.id}`;
+      wallGroup.add(
+        wallIntervalBoxes(wall, openingsByWall.get(wall.id) ?? [], wallMaterial, baseboardMaterial),
+      );
+      for (const opening of openingsByWall.get(wall.id) ?? []) {
+        wallGroup.add(opening.kind === 'window' ? windowMesh(wall, opening) : doorMesh(wall, opening));
+      }
+      floorGroup.add(wallGroup);
+      wallVisuals.push({
+        group: wallGroup,
+        center: new THREE.Vector3((wall.a.x + wall.b.x) / 2, elevation, (wall.a.y + wall.b.y) / 2),
+        exterior: isExteriorWall(wall, rings),
+        level: floor.level,
+      });
+    }
+
+    for (const stair of floor.stairs) {
+      floorGroup.add(stairMesh(stair));
+    }
+
+    for (const furniture of floor.furniture) {
+      const object = buildFurniture(furniture, anisotropy);
+      const count = furniture.items.reduce((sum, item) => sum + item.quantity, 0);
+      addCountBadge(object, count, FURNITURE_CATALOG[furniture.kind].height);
+      object.userData.floorId = floor.id;
+      object.userData.floorLevel = floor.level;
+      object.traverse((child) => {
+        child.userData.floorLevel = floor.level;
+      });
+      floorGroup.add(object);
+      furnitureObjects.set(furniture.id, object);
+    }
+
+    root.add(floorGroup);
+    floorGroups.set(floor.level, { level: floor.level, elevation, group: floorGroup });
+    topHeight = elevation + FLOOR_HEIGHT;
   }
 
-  for (const furniture of project.furniture) {
-    const object = buildFurniture(furniture, anisotropy);
-    const count = furniture.items.reduce((sum, item) => sum + item.quantity, 0);
-    addCountBadge(object, count, FURNITURE_CATALOG[furniture.kind].height);
-    root.add(object);
-    furnitureObjects.set(furniture.id, object);
-  }
-
-  const bounds = geometry.bounds;
   const center = new THREE.Vector3(
-    (bounds.minX + bounds.maxX) / 2 || 4,
-    0,
-    (bounds.minY + bounds.maxY) / 2 || 3,
+    bounds ? (bounds.minX + bounds.maxX) / 2 : 4,
+    topHeight / 2,
+    bounds ? (bounds.minY + bounds.maxY) / 2 : 3,
   );
-  let radius = Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY, 8) / 2;
+  let radius = bounds ? Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY, 8) / 2 : 5;
   if (!Number.isFinite(radius) || radius <= 0) radius = 5;
-  return { root, furnitureObjects, wallVisuals, center, radius };
+
+  return { root, furnitureObjects, wallVisuals, floorGroups, center, radius, topHeight };
 }
 
 export { disposeObject };

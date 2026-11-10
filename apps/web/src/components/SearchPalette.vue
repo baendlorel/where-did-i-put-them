@@ -14,8 +14,23 @@ import {
 const input = ref<HTMLInputElement | null>(null);
 const activeIndex = ref(0);
 const results = searchHits;
-const totalFurniture = computed(() => state.project.furniture.length);
-const totalItems = computed(() => state.project.furniture.reduce((sum, f) => sum + f.items.length, 0));
+const totalFurniture = computed(() =>
+  state.workspace.houses.reduce(
+    (sum, house) => sum + house.floors.reduce((inner, floor) => inner + floor.furniture.length, 0),
+    0,
+  ),
+);
+const totalItems = computed(() =>
+  state.workspace.houses.reduce(
+    (sum, house) =>
+      sum +
+      house.floors.reduce(
+        (inner, floor) => inner + floor.furniture.reduce((count, f) => count + f.items.length, 0),
+        0,
+      ),
+    0,
+  ),
+);
 
 const suggestions = ['护照', '充电器', '咖啡豆', 'Switch', '备用钥匙'];
 
@@ -91,10 +106,9 @@ function handleKeydown(event: KeyboardEvent): void {
 }
 
 function hitSubtitle(hit: SearchHit): string {
-  if (hit.match === 'furniture') return `家具位置 · ${hit.quantity} 类物品`;
-  const parts = [`在 ${hit.furnitureName}`];
-  if (hit.note) parts.push(hit.note);
-  return parts.join(' · ');
+  const context = `${hit.houseName} · ${hit.floorName} · ${hit.furnitureName}`;
+  if (hit.match === 'furniture') return `${context} · ${hit.quantity} 类物品`;
+  return hit.note ? `${context} · ${hit.note}` : context;
 }
 </script>
 
@@ -154,7 +168,7 @@ function hitSubtitle(hit: SearchHit): string {
             <div v-else class="result-list">
               <button
                 v-for="(hit, index) in results"
-                :key="`${hit.furnitureId}-${hit.itemId ?? 'container'}`"
+                :key="`${hit.houseId}-${hit.floorId}-${hit.furnitureId}-${hit.itemId ?? 'container'}`"
                 class="result-row"
                 :class="{ active: index === activeIndex }"
                 @mouseenter="activeIndex = index"
@@ -172,7 +186,7 @@ function hitSubtitle(hit: SearchHit): string {
                   <span class="result-sub" v-html="marked(hitSubtitle(hit))" />
                 </span>
                 <span class="result-side">
-                  <span class="result-place">{{ hit.furnitureKind === 'cabinet' ? '收纳柜' : '家具' }}</span>
+                  <span class="result-place">{{ hit.floorName }} · {{ hit.houseName }}</span>
                   <span class="result-go">
                     <AppIcon name="arrow-right" :size="14" />
                   </span>

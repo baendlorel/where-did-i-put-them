@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   FURNITURE_CATALOG,
+  STAIR_DEFAULTS,
   buildFloorGeometry,
   clamp,
   distance,
@@ -10,9 +11,12 @@ import type { ShapeKind, Vec2 } from '@shijian/shared';
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import AppIcon from '../components/AppIcon.vue';
 import {
+  activeFloor,
+  activeHouse,
   addFurniture,
   addOpening,
   addShape,
+  addStair,
   addWall,
   clearHighlight,
   findWallAt,
@@ -20,13 +24,17 @@ import {
   pushToast,
   requestSyncNow,
   selectedFurniture,
+  selectedStair,
+  selectStair,
   setTool,
   state,
+  updateStair,
 } from '../stores/workspace';
 import {
   fitCamera,
   hitFurniture,
   hitOpening,
+  hitStair,
   hitWall,
   renderPlan,
   screenToWorld,
@@ -43,10 +51,14 @@ const spacePanning = ref(false);
 const dragging = ref(false);
 const fitted = ref(false);
 
-const floor = computed(() => buildFloorGeometry(state.project.floor.shapes));
+const floor = computed(() => buildFloorGeometry(activeFloor.value.shapes));
+const lowerStairs = computed(() => {
+  const lower = activeHouse.value.floors.find((item) => item.level === activeFloor.value.level - 1);
+  return lower?.stairs ?? [];
+});
 const stats = computed(() => ({
   area: floor.value.area,
-  items: state.project.furniture.reduce((sum, f) => sum + f.items.length, 0),
+  items: activeFloor.value.furniture.reduce((sum, f) => sum + f.items.length, 0),
 }));
 const activeFurnitureLabel = computed(() => {
   if (state.tool in FURNITURE_CATALOG) {
@@ -59,7 +71,8 @@ type Interaction =
   | { type: 'pan'; startX: number; startY: number; cameraX: number; cameraY: number; moved: boolean }
   | { type: 'shape'; start: Vec2; current: Vec2; shift: boolean }
   | { type: 'wall'; start: Vec2; current: Vec2; shift: boolean }
-  | { type: 'move'; id: string; offset: Vec2; moved: boolean };
+  | { type: 'move'; id: string; offset: Vec2; moved: boolean }
+  | { type: 'move-stair'; id: string; offset: Vec2; moved: boolean };
 
 let interaction: Interaction | null = null;
 let raf = 0;
@@ -69,7 +82,7 @@ let cameraTween:
   | null = null;
 
 const isDrawingTool = computed(() =>
-  ['rect', 'ellipse', 'wall'].includes(state.tool),
+  ['rect', 'ellipse', 'wall', 'stair'].includes(state.tool),
 );
 
 function canvasPoint(event: PointerEvent | WheelEvent): Vec2 {
@@ -87,7 +100,7 @@ function snapPoint(point: Vec2, step = 0.05): Vec2 {
 
 function nearestWallEndpoint(point: Vec2, threshold = 0.25): Vec2 | null {
   let best: { point: Vec2; dist: number } | null = null;
-  for (const wall of state.project.floor.walls) {
+  for (const wall of activeFloor.value.walls) {
     for (const candidate of [wall.a, wall.b]) {
       const dist = distance(point, candidate);
       if (dist <= threshold && (!best || dist < best.dist)) best = { point: candidate, dist };
@@ -111,6 +124,7 @@ function clearPreview(): void {
   preview.wall = undefined;
   preview.opening = undefined;
   preview.furniture = undefined;
+  preview.stair = undefined;
 }
 
 function updateHover(world: Vec2): void {
@@ -118,7 +132,7 @@ function updateHover(world: Vec2): void {
     hoverFurnitureId.value = null;
     return;
   }
-  hoverFurnitureId.value = hitFurniture(state.project, world)?.id ?? null;
+  hoverFurnitureId.value = hitFurniture(activeFloor.value, world)?.id ?? null;
 }
 
 function updateOpeningPreview(world: Vec2): void {
@@ -180,7 +194,7 @@ function handlePointerDown(event: PointerEvent): void {
   if (event.button !== 0) return;
 
   if (state.tool === 'select') {
-    const furniture = hitFurniture(state.project, world);
+    const furniture = hitFurniture(activeFloor.value, world);
     if (furniture) {
       state.selection = { kind: 'furniture', id: furniture.id };
       clearHighlight();
@@ -194,14 +208,28 @@ function handlePointerDown(event: PointerEvent): void {
       canvasEl.setPointerCapture(event.pointerId);
       return;
     }
-    const opening = hitOpening(state.project, world);
+    const stair = hitStair(activeFloor.value, world);
+    if (stair) {
+      selectStair(stair.id);
+      clearHighlight();
+      interaction = {
+        type: 'move-stair',
+        id: stair.id,
+        offset: { x: world.x - stair.x, y: world.y - stair.y },
+        moved: false,
+      };
+      dragging.value = true;
+      canvasEl.setPointerCapture(event.pointerId);
+      return;
+    }
+    const opening = hitOpening(activeFloor.value, world);
     if (opening) {
       state.selection = { kind: 'opening', id: opening.id };
       clearHighlight();
       startPan(event, point);
       return;
     }
-    const wall = hitWall(state.project, world);
+    const wall = hitWall(activeFloor.value, world);
     if (wall) {
       state.selection = { kind: 'wall', id: wall.id };
       clearHighlight();
@@ -243,6 +271,13 @@ function handlePointerDown(event: PointerEvent): void {
     return;
   }
 
+  if (state.tool === 'stair') {
+    const position = snapPoint(world, 0.05);
+    addStair(position.x, position.y);
+    clearPreview();
+    return;
+  }
+
   if (['sofa', 'table', 'bed', 'cabinet', 'nightstand'].includes(state.tool)) {
     const position = snapPoint(world, 0.1);
     addFurniture(state.tool as keyof typeof FURNITURE_CATALOG, position.x, position.y);
@@ -258,6 +293,18 @@ function handlePointerMove(event: PointerEvent): void {
   if (!interaction) {
     updateHover(world);
     if (state.tool === 'door' || state.tool === 'window') updateOpeningPreview(world);
+    if (state.tool === 'stair') {
+      preview.stair = {
+        x: snap(world.x, 0.05),
+        y: snap(world.y, 0.05),
+        width: STAIR_DEFAULTS.width,
+        depth: STAIR_DEFAULTS.depth,
+        rotation: 0,
+        steps: STAIR_DEFAULTS.steps,
+      };
+    } else {
+      preview.stair = undefined;
+    }
     if (['sofa', 'table', 'bed', 'cabinet', 'nightstand'].includes(state.tool)) {
       const kind = state.tool as keyof typeof FURNITURE_CATALOG;
       const spec = FURNITURE_CATALOG[kind];
@@ -270,7 +317,7 @@ function handlePointerMove(event: PointerEvent): void {
         rotation: 0,
         color: spec.color,
       };
-    } else if (state.tool !== 'door' && state.tool !== 'window') {
+    } else if (state.tool !== 'door' && state.tool !== 'window' && state.tool !== 'stair') {
       preview.furniture = undefined;
     }
     return;
@@ -314,6 +361,18 @@ function handlePointerMove(event: PointerEvent): void {
       moveFurniture(furniture.id, target.x, target.y);
     }
   }
+
+  if (interaction.type === 'move-stair') {
+    const target = {
+      x: snap(world.x - interaction.offset.x, 0.05),
+      y: snap(world.y - interaction.offset.y, 0.05),
+    };
+    const stair = selectedStair.value;
+    if (stair) {
+      interaction.moved = true;
+      updateStair(stair.id, { x: target.x, y: target.y }, `move-stair-${stair.id}`);
+    }
+  }
 }
 
 function finishInteraction(event: PointerEvent): void {
@@ -350,7 +409,7 @@ function finishInteraction(event: PointerEvent): void {
     return;
   }
 
-  if (active.type === 'move' && active.moved) {
+  if ((active.type === 'move' || active.type === 'move-stair') && active.moved) {
     requestSyncNow();
   }
   if (active.type === 'pan' && !active.moved) {
@@ -389,7 +448,7 @@ function zoomBy(factor: number): void {
 }
 
 function fitToView(): void {
-  const result = fitCamera(camera, state.project, camera.width, camera.height);
+  const result = fitCamera(camera, activeFloor.value, camera.width, camera.height);
   camera.x = result.x;
   camera.y = result.y;
   camera.scale = result.scale;
@@ -446,7 +505,7 @@ function frame(now: number): void {
   const ctx = canvas.value?.getContext('2d');
   if (ctx) {
     renderPlan(ctx, {
-      project: state.project,
+      project: activeFloor.value,
       camera,
       floor: floor.value,
       now,
@@ -455,6 +514,7 @@ function frame(now: number): void {
       highlightName: state.highlight?.itemName ?? '',
       hoverFurnitureId: hoverFurnitureId.value,
       preview,
+      stairVoids: lowerStairs.value,
       tool: state.tool,
       booleanMode: state.booleanMode,
       mouse: mouse.value,
@@ -505,7 +565,19 @@ watch(
 );
 
 watch(
-  () => state.project.floor.shapes.length,
+  () => [state.activeHouseId, state.activeFloorId] as const,
+  () => {
+    cancelDrawing();
+    hoverFurnitureId.value = null;
+    window.setTimeout(() => {
+      fitToView();
+      if (state.focusRequest) focusOn(state.focusRequest.x, state.focusRequest.y, state.focusRequest.zoom);
+    }, 0);
+  },
+);
+
+watch(
+  () => activeFloor.value.shapes.length,
   () => {
     // A shape edit changes the floor silhouette; repaint happens in the loop.
   },
@@ -559,8 +631,8 @@ onBeforeUnmount(() => {
       </div>
       <span class="hud-divider" />
       <div class="hud-meta">
-        <div><span>{{ state.project.floor.walls.length }}</span> 面墙</div>
-        <div><span>{{ state.project.furniture.length }}</span> 件家具</div>
+        <div><span>{{ activeFloor.walls.length }}</span> 面墙</div>
+        <div><span>{{ activeFloor.furniture.length }}</span> 件家具</div>
         <div><span>{{ stats.items }}</span> 类物品</div>
       </div>
     </div>
@@ -573,6 +645,7 @@ onBeforeUnmount(() => {
       <template v-else-if="state.tool === 'wall'">按住拖动绘制墙体 · 按住 Shift 锁定角度</template>
       <template v-else-if="state.tool === 'door'">点击墙体放置门</template>
       <template v-else-if="state.tool === 'window'">点击墙体放置窗</template>
+      <template v-else-if="state.tool === 'stair'">点击画布放置楼梯 · 默认通向上一层</template>
       <template v-else>点击画布放置{{ activeFurnitureLabel }}</template>
     </div>
 
@@ -595,7 +668,7 @@ onBeforeUnmount(() => {
       <span class="zoom-readout">{{ Math.round(state.zoom) }} px/m</span>
     </div>
 
-    <div v-if="state.project.floor.shapes.length === 0 && !preview.shape" class="empty-stage">
+    <div v-if="activeFloor.shapes.length === 0 && !preview.shape" class="empty-stage">
       <div class="empty-mark"><AppIcon name="rect" :size="27" /></div>
       <h2>从一块地面开始</h2>
       <p>用矩形或椭圆勾勒宅邸轮廓。重叠的图形会融合，切换「差集」可以挖出天井、凹口或走廊。</p>

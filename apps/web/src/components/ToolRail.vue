@@ -21,6 +21,7 @@ const functionTools: { tool: Tool; label: string; icon: string; hint: string }[]
   { tool: 'wall', label: '墙体', icon: 'wall', hint: 'W' },
   { tool: 'door', label: '门', icon: 'door', hint: 'D' },
   { tool: 'window', label: '窗', icon: 'window', hint: 'N' },
+  { tool: 'stair', label: '楼梯', icon: 'stairs', hint: 'S' },
 ];
 </script>
 

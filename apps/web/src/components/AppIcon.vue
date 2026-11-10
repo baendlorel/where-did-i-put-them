@@ -43,6 +43,11 @@ withDefaults(
       <rect x="4" y="4.5" width="16" height="15" rx="1" />
       <path d="M12 4.5v15M4 12h16" />
     </template>
+    <template v-else-if="name === 'stairs'">
+      <path d="M3 20h4v-4h4v-4h4V8h4V4h3" />
+      <path d="M3 20h18" opacity=".55" />
+      <path d="M17 4h4v4" opacity=".55" />
+    </template>
     <template v-else-if="name === 'sofa'">
       <path d="M5 11V8.2c0-1.2.8-2 2-2h10c1.2 0 2 .8 2 2V11" />
       <path d="M4.2 11.5c1.3 0 2.2.9 2.2 2.2v1.2h11.2v-1.2c0-1.3.9-2.2 2.2-2.2 1.4 0 2.2.9 2.2 2.2v4.1H2v-4.1c0-1.3.8-2.2 2.2-2.2Z" />
@@ -71,6 +76,11 @@ withDefaults(
     <template v-else-if="name === 'search'">
       <circle cx="10.7" cy="10.7" r="6.5" />
       <path d="m15.6 15.6 4.2 4.2" />
+    </template>
+    <template v-else-if="name === 'home'">
+      <path d="m3.2 10.4 8.8-7 8.8 7" />
+      <path d="M5.4 9.2v10.6h13.2V9.2" />
+      <path d="M9.4 19.8v-5.5h5.2v5.5" opacity=".7" />
     </template>
     <template v-else-if="name === 'undo'">
       <path d="M9 7 4.5 11.5 9 16" />

@@ -12,8 +12,9 @@ import type {
   Furniture,
   FurnitureKind,
   Opening,
-  Project,
+  FloorPlan,
   ShapeKind,
+  Stair,
   Tool,
   Vec2,
   Wall,
@@ -50,10 +51,18 @@ export interface Preview {
     rotation: number;
     color: string;
   };
+  stair?: {
+    x: number;
+    y: number;
+    width: number;
+    depth: number;
+    rotation: number;
+    steps: number;
+  };
 }
 
 export interface RenderOptions {
-  project: Project;
+  project: FloorPlan;
   camera: PlanCamera;
   floor: FloorGeometry;
   now: number;
@@ -62,6 +71,7 @@ export interface RenderOptions {
   highlightName: string;
   hoverFurnitureId: string | null;
   preview: Preview;
+  stairVoids?: Stair[];
   tool: Tool;
   booleanMode: BooleanMode;
   mouse: Vec2 | null;
@@ -101,7 +111,7 @@ export function screenToWorld(point: Vec2, camera: PlanCamera): Vec2 {
   };
 }
 
-export function hitFurniture(project: Project, point: Vec2): Furniture | null {
+export function hitFurniture(project: FloorPlan, point: Vec2): Furniture | null {
   for (let i = project.furniture.length - 1; i >= 0; i -= 1) {
     const furniture = project.furniture[i];
     const dx = point.x - furniture.x;
@@ -118,9 +128,24 @@ export function hitFurniture(project: Project, point: Vec2): Furniture | null {
   return null;
 }
 
-export function hitWall(project: Project, point: Vec2): Wall | null {
-  let closest: { wall: Wall; distance: number } | null = null;
-  for (const wall of project.floor.walls) {
+export function hitStair(project: FloorPlan, point: Vec2): Stair | null {
+  for (let i = project.stairs.length - 1; i >= 0; i -= 1) {
+    const stair = project.stairs[i];
+    const dx = point.x - stair.x;
+    const dy = point.y - stair.y;
+    const cos = Math.cos(-stair.rotation);
+    const sin = Math.sin(-stair.rotation);
+    const localX = dx * cos - dy * sin;
+    const localY = dx * sin + dy * cos;
+    if (Math.abs(localX) <= stair.width / 2 + 0.05 && Math.abs(localY) <= stair.depth / 2 + 0.05) {
+      return stair;
+    }
+  }
+  return null;
+}
+
+export function hitWall(project: FloorPlan, point: Vec2): Wall | null {  let closest: { wall: Wall; distance: number } | null = null;
+  for (const wall of project.walls) {
     const dx = wall.b.x - wall.a.x;
     const dy = wall.b.y - wall.a.y;
     const lengthSq = dx * dx + dy * dy;
@@ -134,9 +159,9 @@ export function hitWall(project: Project, point: Vec2): Wall | null {
   return closest?.wall ?? null;
 }
 
-export function hitOpening(project: Project, point: Vec2): Opening | null {
-  for (const opening of project.floor.openings) {
-    const wall = project.floor.walls.find((item) => item.id === opening.wallId);
+export function hitOpening(project: FloorPlan, point: Vec2): Opening | null {
+  for (const opening of project.openings) {
+    const wall = project.walls.find((item) => item.id === opening.wallId);
     if (!wall) continue;
     const segment = openingSegment(wall, opening);
     const dx = segment.b.x - segment.a.x;
@@ -316,9 +341,9 @@ function drawWallSegment(
   ctx.stroke();
 }
 
-function drawWalls(ctx: CanvasRenderingContext2D, project: Project, camera: PlanCamera): void {
+function drawWalls(ctx: CanvasRenderingContext2D, project: FloorPlan, camera: PlanCamera): void {
   const openingsByWall = new Map<string, Opening[]>();
-  for (const opening of project.floor.openings) {
+  for (const opening of project.openings) {
     const list = openingsByWall.get(opening.wallId) ?? [];
     list.push(opening);
     openingsByWall.set(opening.wallId, list);
@@ -328,7 +353,7 @@ function drawWalls(ctx: CanvasRenderingContext2D, project: Project, camera: Plan
   ctx.shadowColor = 'rgba(38, 48, 42, 0.18)';
   ctx.shadowBlur = 7;
   ctx.shadowOffsetY = 3;
-  for (const wall of project.floor.walls) {
+  for (const wall of project.walls) {
     const length = wallLength(wall);
     if (length < 0.03) continue;
     const ux = (wall.b.x - wall.a.x) / length;
@@ -367,9 +392,9 @@ function drawWalls(ctx: CanvasRenderingContext2D, project: Project, camera: Plan
   ctx.restore();
 }
 
-function drawOpenings(ctx: CanvasRenderingContext2D, project: Project, camera: PlanCamera): void {
-  for (const opening of project.floor.openings) {
-    const wall = project.floor.walls.find((item) => item.id === opening.wallId);
+function drawOpenings(ctx: CanvasRenderingContext2D, project: FloorPlan, camera: PlanCamera): void {
+  for (const opening of project.openings) {
+    const wall = project.walls.find((item) => item.id === opening.wallId);
     if (!wall) continue;
     const segment = openingSegment(wall, opening);
     const a = worldToScreen(segment.a, camera);
@@ -428,6 +453,203 @@ function drawOpenings(ctx: CanvasRenderingContext2D, project: Project, camera: P
       ctx.beginPath();
       ctx.arc(a.x, a.y, 2.6, 0, Math.PI * 2);
       ctx.fill();
+      ctx.restore();
+    }
+  }
+}
+
+function drawStairs(
+  ctx: CanvasRenderingContext2D,
+  project: FloorPlan,
+  camera: PlanCamera,
+  selection: Selection | null,
+): void {
+  for (const stair of project.stairs) {
+    const screen = worldToScreen(stair, camera);
+    const selected = selection?.kind === 'stair' && selection.id === stair.id;
+    const w = stair.width;
+    const d = stair.depth;
+
+    ctx.save();
+    ctx.translate(screen.x, screen.y);
+    ctx.rotate(stair.rotation);
+    ctx.scale(camera.scale, camera.scale);
+    ctx.shadowColor = 'rgba(40, 34, 26, 0.18)';
+    ctx.shadowBlur = 6 / camera.scale;
+    ctx.shadowOffsetY = 3 / camera.scale;
+
+    ctx.fillStyle = '#eee5d7';
+    roundRect(ctx, -w / 2, -d / 2, w, d, 0.025);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = selected ? COLORS.accent : '#8a7c69';
+    ctx.lineWidth = selected ? 0.04 : 0.022;
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(255, 253, 247, 0.55)';
+    roundRect(ctx, -w / 2 + 0.035, -d / 2 + 0.035, w - 0.07, d - 0.07, 0.012);
+    ctx.fill();
+
+    ctx.strokeStyle = 'rgba(126, 112, 92, 0.55)';
+    ctx.lineWidth = 0.012;
+    for (let i = 1; i < stair.steps; i += 1) {
+      const y = -d / 2 + (d * i) / stair.steps;
+      ctx.beginPath();
+      ctx.moveTo(-w / 2 + 0.06, y);
+      ctx.lineTo(w / 2 - 0.06, y);
+      ctx.stroke();
+    }
+
+    ctx.strokeStyle = alpha(COLORS.accent, 0.9);
+    ctx.fillStyle = alpha(COLORS.accent, 0.9);
+    ctx.lineWidth = 0.018;
+    ctx.beginPath();
+    ctx.moveTo(0, d / 2 - 0.2);
+    ctx.lineTo(0, -d / 2 + 0.28);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, -d / 2 + 0.16);
+    ctx.lineTo(-0.09, -d / 2 + 0.34);
+    ctx.lineTo(0.09, -d / 2 + 0.34);
+    ctx.closePath();
+    ctx.fill();
+    ctx.font = '600 0.12px "Avenir Next", "PingFang SC", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('UP', 0, 0.02);
+    ctx.restore();
+
+    if (selected) {
+      ctx.save();
+      ctx.translate(screen.x, screen.y);
+      ctx.rotate(stair.rotation);
+      const pad = 6;
+      const sw = stair.width * camera.scale + pad * 2;
+      const sd = stair.depth * camera.scale + pad * 2;
+      ctx.strokeStyle = COLORS.accent;
+      ctx.lineWidth = 1.6;
+      ctx.strokeRect(-sw / 2, -sd / 2, sw, sd);
+      ctx.fillStyle = COLORS.accent;
+      for (const [hx, hy] of [
+        [-sw / 2, -sd / 2],
+        [sw / 2, -sd / 2],
+        [-sw / 2, sd / 2],
+        [sw / 2, sd / 2],
+      ]) {
+        ctx.beginPath();
+        ctx.arc(hx, hy, 3.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+
+      const label = '楼梯 · 上一层';
+      ctx.save();
+      ctx.font = '600 10px "Avenir Next", "PingFang SC", sans-serif';
+      const tw = ctx.measureText(label).width + 14;
+      ctx.fillStyle = COLORS.accent;
+      roundRect(ctx, screen.x - tw / 2, screen.y + (stair.depth / 2) * camera.scale + 10, tw, 17, 4);
+      ctx.fill();
+      ctx.fillStyle = '#fffaf4';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, screen.x, screen.y + (stair.depth / 2) * camera.scale + 18.5);
+      ctx.restore();
+    }
+  }
+}
+
+function drawStairPreview(
+  ctx: CanvasRenderingContext2D,
+  preview: NonNullable<Preview['stair']>,
+  camera: PlanCamera,
+): void {
+  const screen = worldToScreen(preview, camera);
+  ctx.save();
+  ctx.globalAlpha = 0.55;
+  ctx.translate(screen.x, screen.y);
+  ctx.rotate(preview.rotation);
+  ctx.scale(camera.scale, camera.scale);
+  ctx.fillStyle = alpha(COLORS.accent, 0.16);
+  ctx.strokeStyle = alpha(COLORS.accent, 0.9);
+  ctx.lineWidth = 0.025;
+  roundRect(ctx, -preview.width / 2, -preview.depth / 2, preview.width, preview.depth, 0.025);
+  ctx.fill();
+  ctx.stroke();
+  ctx.strokeStyle = alpha(COLORS.accent, 0.55);
+  ctx.lineWidth = 0.012;
+  for (let i = 1; i < preview.steps; i += 1) {
+    const y = -preview.depth / 2 + (preview.depth * i) / preview.steps;
+    ctx.beginPath();
+    ctx.moveTo(-preview.width / 2 + 0.06, y);
+    ctx.lineTo(preview.width / 2 - 0.06, y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawStairVoids(
+  ctx: CanvasRenderingContext2D,
+  stairs: Stair[],
+  camera: PlanCamera,
+): void {
+  for (const stair of stairs) {
+    const screen = worldToScreen(stair, camera);
+    ctx.save();
+    ctx.translate(screen.x, screen.y);
+    ctx.rotate(stair.rotation);
+    ctx.scale(camera.scale, camera.scale);
+
+    ctx.fillStyle = 'rgba(46, 57, 51, 0.09)';
+    roundRect(ctx, -stair.width / 2, -stair.depth / 2, stair.width, stair.depth, 0.02);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(46, 57, 51, 0.38)';
+    ctx.lineWidth = 0.018;
+    ctx.setLineDash([0.08, 0.06]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.strokeStyle = 'rgba(46, 57, 51, 0.15)';
+    ctx.lineWidth = 0.01;
+    for (let i = 1; i < stair.steps; i += 1) {
+      const y = -stair.depth / 2 + (stair.depth * i) / stair.steps;
+      ctx.beginPath();
+      ctx.moveTo(-stair.width / 2 + 0.05, y);
+      ctx.lineTo(stair.width / 2 - 0.05, y);
+      ctx.stroke();
+    }
+
+    ctx.strokeStyle = alpha(COLORS.accent, 0.55);
+    ctx.fillStyle = alpha(COLORS.accent, 0.55);
+    ctx.lineWidth = 0.014;
+    ctx.beginPath();
+    ctx.moveTo(0, -stair.depth / 2 + 0.2);
+    ctx.lineTo(0, stair.depth / 2 - 0.24);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, stair.depth / 2 - 0.12);
+    ctx.lineTo(-0.08, stair.depth / 2 - 0.3);
+    ctx.lineTo(0.08, stair.depth / 2 - 0.3);
+    ctx.closePath();
+    ctx.fill();
+    ctx.font = '600 0.11px "Avenir Next", "PingFang SC", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('VOID', 0, 0.02);
+    ctx.restore();
+
+    if (camera.scale > 42) {
+      ctx.save();
+      ctx.font = '500 9px "Avenir Next", "PingFang SC", sans-serif';
+      const label = '楼梯洞口';
+      const tw = ctx.measureText(label).width + 12;
+      const y = screen.y + (stair.depth / 2) * camera.scale + 10;
+      ctx.fillStyle = 'rgba(251, 249, 244, 0.8)';
+      roundRect(ctx, screen.x - tw / 2, y - 7, tw, 14, 4);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(46, 57, 51, 0.48)';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, screen.x, y);
       ctx.restore();
     }
   }
@@ -811,11 +1033,11 @@ function drawWallPreview(ctx: CanvasRenderingContext2D, preview: { a: Vec2; b: V
 
 function drawOpeningPreview(
   ctx: CanvasRenderingContext2D,
-  project: Project,
+  project: FloorPlan,
   preview: { wallId: string; kind: Opening['kind']; offset: number },
   camera: PlanCamera,
 ): void {
-  const wall = project.floor.walls.find((item) => item.id === preview.wallId);
+  const wall = project.walls.find((item) => item.id === preview.wallId);
   if (!wall) return;
   const segment = openingSegment(wall, {
     id: 'preview',
@@ -851,13 +1073,13 @@ function drawOpeningPreview(
 
 function drawSelection(
   ctx: CanvasRenderingContext2D,
-  project: Project,
+  project: FloorPlan,
   selection: Selection | null,
   camera: PlanCamera,
 ): void {
   if (!selection) return;
   if (selection.kind === 'wall') {
-    const wall = project.floor.walls.find((item) => item.id === selection.id);
+    const wall = project.walls.find((item) => item.id === selection.id);
     if (!wall) return;
     const a = worldToScreen(wall.a, camera);
     const b = worldToScreen(wall.b, camera);
@@ -872,9 +1094,9 @@ function drawSelection(
     ctx.restore();
   }
   if (selection.kind === 'opening') {
-    const opening = project.floor.openings.find((item) => item.id === selection.id);
+    const opening = project.openings.find((item) => item.id === selection.id);
     if (!opening) return;
-    const wall = project.floor.walls.find((item) => item.id === opening.wallId);
+    const wall = project.walls.find((item) => item.id === opening.wallId);
     if (!wall) return;
     const segment = openingSegment(wall, opening);
     const a = worldToScreen(segment.a, camera);
@@ -898,11 +1120,14 @@ export function renderPlan(ctx: CanvasRenderingContext2D, options: RenderOptions
   drawFloor(ctx, options.floor, camera);
   drawWalls(ctx, options.project, camera);
   drawOpenings(ctx, options.project, camera);
+  if (options.stairVoids?.length) drawStairVoids(ctx, options.stairVoids, camera);
+  drawStairs(ctx, options.project, camera, options.selection);
   drawSelection(ctx, options.project, options.selection, camera);
 
   if (options.preview.shape) drawShapePreview(ctx, options.preview.shape, camera, options.booleanMode);
   if (options.preview.wall) drawWallPreview(ctx, options.preview.wall, camera);
   if (options.preview.opening) drawOpeningPreview(ctx, options.project, options.preview.opening, camera);
+  if (options.preview.stair) drawStairPreview(ctx, options.preview.stair, camera);
 
   for (const furniture of options.project.furniture) {
     drawFurniture(ctx, furniture, camera, {
@@ -965,11 +1190,11 @@ export function renderPlan(ctx: CanvasRenderingContext2D, options: RenderOptions
 
 export function fitCamera(
   camera: PlanCamera,
-  project: Project,
+  project: FloorPlan,
   width: number,
   height: number,
 ): PlanCamera {
-  const floor = buildFloorGeometry(project.floor.shapes);
+  const floor = buildFloorGeometry(project.shapes);
   let minX = floor.bounds.minX;
   let minY = floor.bounds.minY;
   let maxX = floor.bounds.maxX;
@@ -985,6 +1210,13 @@ export function fitCamera(
     minY = Math.min(minY, furniture.y - furniture.depth / 2);
     maxX = Math.max(maxX, furniture.x + furniture.width / 2);
     maxY = Math.max(maxY, furniture.y + furniture.depth / 2);
+  }
+  for (const stair of project.stairs) {
+    const radius = Math.hypot(stair.width, stair.depth) / 2;
+    minX = Math.min(minX, stair.x - radius);
+    minY = Math.min(minY, stair.y - radius);
+    maxX = Math.max(maxX, stair.x + radius);
+    maxY = Math.max(maxY, stair.y + radius);
   }
   const padding = 74;
   const spanX = Math.max(1, maxX - minX);

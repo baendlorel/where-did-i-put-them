@@ -15,6 +15,7 @@ import {
   deleteFurniture,
   deleteItem,
   deleteOpening,
+  deleteStair,
   deleteWall,
   focusFurniture,
   highlightStoredItem,
@@ -29,32 +30,40 @@ import {
   updateFurniture,
   updateItem,
   updateOpening,
+  updateStair,
   updateWall,
+  useWorkspace,
 } from '../stores/workspace';
-import { useWorkspace } from '../stores/workspace';
 
-const { selectedFurniture, selectedWall, selectedOpening } = useWorkspace();
+const {
+  activeHouse,
+  activeFloor,
+  selectedFurniture,
+  selectedWall,
+  selectedOpening,
+  selectedStair,
+} = useWorkspace();
 const newItemName = ref('');
 const newItemQty = ref(1);
 
-const area = computed(() => buildFloorGeometry(state.project.floor.shapes).area);
+const area = computed(() => buildFloorGeometry(activeFloor.value.shapes).area);
 const itemKinds = computed(() =>
-  state.project.furniture.reduce((sum, furniture) => sum + furniture.items.length, 0),
+  activeFloor.value.furniture.reduce((sum, furniture) => sum + furniture.items.length, 0),
 );
 const itemUnits = computed(() =>
-  state.project.furniture.reduce(
+  activeFloor.value.furniture.reduce(
     (sum, furniture) => sum + furniture.items.reduce((inner, item) => inner + item.quantity, 0),
     0,
   ),
 );
 const wallOpenings = computed(() =>
   selectedWall.value
-    ? state.project.floor.openings.filter((opening) => opening.wallId === selectedWall.value?.id)
+    ? activeFloor.value.openings.filter((opening) => opening.wallId === selectedWall.value?.id)
     : [],
 );
 const selectedOpeningHost = computed(() => {
   if (!selectedOpening.value) return null;
-  return state.project.floor.walls.find((wall) => wall.id === selectedOpening.value?.wallId) ?? null;
+  return activeFloor.value.walls.find((wall) => wall.id === selectedOpening.value?.wallId) ?? null;
 });
 
 const openingDegrees = computed({
@@ -65,6 +74,17 @@ const openingDegrees = computed({
   set: (value: number) => {
     const furniture = selectedFurniture.value;
     if (furniture) updateFurniture(furniture.id, { rotation: (value * Math.PI) / 180 }, `rot-${furniture.id}`);
+  },
+});
+
+const stairDegrees = computed({
+  get: () => {
+    const stair = selectedStair.value;
+    return stair ? Math.round((((stair.rotation * 180) / Math.PI) % 360 + 360) % 360) : 0;
+  },
+  set: (value: number) => {
+    const stair = selectedStair.value;
+    if (stair) updateStair(stair.id, { rotation: (value * Math.PI) / 180 }, `stair-rot-${stair.id}`);
   },
 });
 
@@ -107,6 +127,18 @@ function changeWallThickness(event: Event): void {
   if (!wall) return;
   const value = Number((event.target as HTMLInputElement).value);
   updateWall(wall.id, { thickness: Math.max(0.06, Math.min(0.5, value)) }, `wall-thickness-${wall.id}`);
+}
+
+function changeStairNumber(field: 'width' | 'depth' | 'steps', event: Event): void {
+  const stair = selectedStair.value;
+  if (!stair) return;
+  const value = Number((event.target as HTMLInputElement).value);
+  if (!Number.isFinite(value)) return;
+  const patch =
+    field === 'steps'
+      ? { steps: Math.max(5, Math.min(28, Math.round(value))) }
+      : { [field]: Math.max(0.5, Math.min(12, value)) };
+  updateStair(stair.id, patch, `stair-${field}-${stair.id}`);
 }
 
 function changeOpeningWidth(event: Event): void {
@@ -180,7 +212,7 @@ function selectFromOverview(id: string, event: MouseEvent): void {
     <header class="inspector-head">
       <div>
         <span class="eyebrow">Inspector</span>
-        <h2>{{ selectedFurniture ? '物件详情' : selectedWall ? '墙体' : selectedOpening ? '门窗' : '空间索引' }}</h2>
+        <h2>{{ selectedFurniture ? '物件详情' : selectedWall ? '墙体' : selectedOpening ? '门窗' : selectedStair ? '楼梯' : '空间索引' }}</h2>
       </div>
       <button
         v-if="state.selection"
@@ -505,11 +537,96 @@ function selectFromOverview(id: string, event: MouseEvent): void {
         </button>
       </template>
 
+      <template v-else-if="selectedStair">
+        <section class="object-hero">
+          <div class="object-icon stair">
+            <AppIcon name="stairs" :size="25" />
+          </div>
+          <div class="object-title">
+            <h3 class="static-name">楼梯</h3>
+            <div class="object-sub">
+              <span class="chip">{{ activeFloor.name }}</span>
+              <span class="dot-sep">·</span>
+              <span>通向上一层</span>
+            </div>
+          </div>
+          <button class="icon-btn danger-btn" title="删除楼梯" @click="deleteStair(selectedStair.id)">
+            <AppIcon name="trash" :size="15" />
+          </button>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-title"><h3>楼梯参数</h3></div>
+          <div class="field-grid">
+            <label class="mini-field">
+              <span>宽</span>
+              <input
+                :value="selectedStair.width.toFixed(2)"
+                type="number"
+                min="0.5"
+                step="0.05"
+                @change="changeStairNumber('width', $event)"
+              />
+              <em>m</em>
+            </label>
+            <label class="mini-field">
+              <span>深</span>
+              <input
+                :value="selectedStair.depth.toFixed(2)"
+                type="number"
+                min="1"
+                step="0.1"
+                @change="changeStairNumber('depth', $event)"
+              />
+              <em>m</em>
+            </label>
+            <label class="mini-field">
+              <span>踏步</span>
+              <input
+                :value="selectedStair.steps"
+                type="number"
+                min="5"
+                max="28"
+                step="1"
+                @change="changeStairNumber('steps', $event)"
+              />
+              <em>级</em>
+            </label>
+            <label class="mini-field">
+              <span>朝向</span>
+              <input
+                :value="stairDegrees"
+                type="number"
+                min="0"
+                max="359"
+                step="5"
+                @change="stairDegrees = Number(($event.target as HTMLInputElement).value)"
+              />
+              <em>°</em>
+            </label>
+          </div>
+          <label class="slider-field">
+            <span class="slider-head"><span>旋转</span><b>{{ stairDegrees }}°</b></span>
+            <input v-model.number="stairDegrees" type="range" min="0" max="359" step="1" />
+          </label>
+          <div class="wall-specs">
+            <div><span>位置</span><b>{{ selectedStair.x.toFixed(2) }}, {{ selectedStair.y.toFixed(2) }} m</b></div>
+            <div><span>连接</span><b>{{ activeFloor.level + 1 }}F · 层高 2.85 m</b></div>
+            <div><span>平面图例</span><b>踏步线 + UP 箭头</b></div>
+          </div>
+        </section>
+
+        <button class="delete-object" @click="deleteStair(selectedStair.id)">
+          <AppIcon name="trash" :size="14" />
+          删除这个楼梯
+        </button>
+      </template>
+
       <template v-else>
         <section class="overview-hero">
           <span class="eyebrow">Your home, remembered</span>
-          <h2 class="overview-title">{{ state.project.name }}</h2>
-          <p>每件家具都是一只收纳盒。点开它，写下里面放了什么，之后就能在全局搜索里找回。</p>
+          <h2 class="overview-title">{{ activeHouse.name }}</h2>
+          <p>{{ activeFloor.name }} · 每件家具都是一只收纳盒。点开它，写下里面放了什么，之后就能在全局搜索里找回。</p>
           <div class="overview-actions">
             <button class="primary-btn accent" @click="openSearch">
               <AppIcon name="search" :size="15" />
@@ -524,13 +641,13 @@ function selectFromOverview(id: string, event: MouseEvent): void {
 
         <section class="stat-grid">
           <div class="stat-card featured">
-            <span>住宅面积</span>
+            <span>本层面积</span>
             <b>{{ formatArea(area) }}</b>
             <em>由平面图形自动计算</em>
           </div>
           <div class="stat-card">
             <span>家具</span>
-            <b>{{ state.project.furniture.length }}</b>
+            <b>{{ activeFloor.furniture.length }}</b>
             <em>件</em>
           </div>
           <div class="stat-card">
@@ -540,8 +657,13 @@ function selectFromOverview(id: string, event: MouseEvent): void {
           </div>
           <div class="stat-card">
             <span>墙体</span>
-            <b>{{ state.project.floor.walls.length }}</b>
-            <em>{{ state.project.floor.openings.length }} 个门窗</em>
+            <b>{{ activeFloor.walls.length }}</b>
+            <em>{{ activeFloor.openings.length }} 个门窗</em>
+          </div>
+          <div class="stat-card">
+            <span>楼梯</span>
+            <b>{{ activeFloor.stairs.length }}</b>
+            <em>{{ activeFloor.level + 1 }}F / {{ activeHouse.floors.length }} 层</em>
           </div>
         </section>
 
@@ -554,7 +676,7 @@ function selectFromOverview(id: string, event: MouseEvent): void {
             </button>
           </div>
           <button
-            v-for="furniture in state.project.furniture"
+            v-for="furniture in activeFloor.furniture"
             :key="furniture.id"
             class="furniture-row"
             @click="selectFromOverview(furniture.id, $event)"
@@ -571,7 +693,7 @@ function selectFromOverview(id: string, event: MouseEvent): void {
               <AppIcon name="locate" :size="13" />
             </span>
           </button>
-          <div v-if="state.project.furniture.length === 0" class="items-empty">
+          <div v-if="activeFloor.furniture.length === 0" class="items-empty">
             <AppIcon name="sofa" :size="22" />
             <p>还没有家具。从左侧选择沙发、床或柜子放到平面图上。</p>
           </div>
@@ -665,6 +787,11 @@ function selectFromOverview(id: string, event: MouseEvent): void {
 .object-icon.window {
   background: #dfeaeb;
   color: #4e828c;
+}
+
+.object-icon.stair {
+  background: #ece4d7;
+  color: #8a6b4b;
 }
 
 .object-title {

@@ -9,6 +9,8 @@ import SearchPalette from './components/SearchPalette.vue';
 import ToolRail from './components/ToolRail.vue';
 import TopBar from './components/TopBar.vue';
 import {
+  activeFloor,
+  activeHouse,
   closeSearch,
   deleteSelection,
   dismissToast,
@@ -67,6 +69,8 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
     return;
   }
 
+  if (modifier) return;
+
   if (event.key === 'Delete' || event.key === 'Backspace') {
     if (state.selection) {
       event.preventDefault();
@@ -113,6 +117,9 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
     case 'n':
       setTool('window');
       break;
+    case 's':
+      setTool('stair');
+      break;
     case '0':
       event.preventDefault();
       window.dispatchEvent(new CustomEvent('shijian:fit'));
@@ -127,9 +134,9 @@ function togglePanel(): void {
 }
 
 watch(
-  () => state.project.name,
-  (name) => {
-    document.title = `${name} · 拾间`;
+  () => [activeHouse.value.name, activeFloor.value.name] as const,
+  ([house, floor]) => {
+    document.title = `${house} · ${floor} · 拾间`;
   },
   { immediate: true },
 );

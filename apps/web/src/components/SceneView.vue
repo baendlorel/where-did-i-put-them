@@ -2,30 +2,58 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import AppIcon from '../components/AppIcon.vue';
 import {
+  activeFloor,
+  activeHouse,
   clearHighlight,
+  selectFloor,
   selectFurniture,
   state,
 } from '../stores/workspace';
 import { buildFloorGeometry } from '@shijian/shared';
 import { createScene } from '../lib/three/SceneController';
-import type { SceneController } from '../lib/three/SceneController';
+import type { FloorDisplayMode, SceneController } from '../lib/three/SceneController';
 
 const container = ref<HTMLDivElement | null>(null);
 const cutaway = ref(true);
+const floorMode = ref<FloorDisplayMode>('whole');
 let scene: SceneController | null = null;
 let rebuildTimer = 0;
+let lastHouseId = '';
 
 const stats = computed(() => ({
-  items: state.project.furniture.reduce((sum, f) => sum + f.items.length, 0),
-  walls: state.project.floor.walls.length,
-  area: `${buildFloorGeometry(state.project.floor.shapes).area.toFixed(1)}㎡`,
+  items: activeHouse.value.floors.reduce(
+    (sum, floor) => sum + floor.furniture.reduce((inner, f) => inner + f.items.length, 0),
+    0,
+  ),
+  walls: activeFloor.value.walls.length,
+  area: `${buildFloorGeometry(activeFloor.value.shapes).area.toFixed(1)}㎡`,
+  floors: activeHouse.value.floors.length,
 }));
+
+function applyFloor(): void {
+  scene?.setFloor(activeFloor.value.level, floorMode.value);
+}
 
 function scheduleRebuild(): void {
   window.clearTimeout(rebuildTimer);
   rebuildTimer = window.setTimeout(() => {
-    scene?.updateProject(state.project);
+    const houseChanged = lastHouseId !== activeHouse.value.id;
+    scene?.updateHouse(activeHouse.value);
+    applyFloor();
     scene?.setSelection(state.selection?.kind === 'furniture' ? state.selection.id : null);
+    if (houseChanged) {
+      lastHouseId = activeHouse.value.id;
+      if (state.focusRequest) {
+        scene?.focusOn(
+          state.focusRequest.x,
+          state.focusRequest.y,
+          state.focusRequest.level,
+          state.focusRequest.zoom,
+        );
+      } else {
+        scene?.resetView();
+      }
+    }
   }, 140);
 }
 
@@ -35,9 +63,13 @@ function syncSelection(): void {
 
 function syncHighlight(): void {
   if (state.highlight) {
-    const furniture = state.project.furniture.find((item) => item.id === state.highlight?.furnitureId);
+    const house = state.workspace.houses.find((item) => item.id === state.highlight?.houseId);
+    const floor = house?.floors.find((item) => item.id === state.highlight?.floorId);
+    const furniture = floor?.furniture.find((item) => item.id === state.highlight?.furnitureId);
     scene?.setHighlight(state.highlight.furnitureId, state.highlight.itemName);
-    if (furniture && state.focusRequest) scene?.focusOn(furniture.x, furniture.y, state.focusRequest.zoom);
+    if (furniture && state.focusRequest) {
+      scene?.focusOn(furniture.x, furniture.y, state.focusRequest.level, state.focusRequest.zoom);
+    }
   } else {
     scene?.setHighlight(null, '');
   }
@@ -46,8 +78,12 @@ function syncHighlight(): void {
 onMounted(() => {
   if (!container.value) return;
   scene = createScene(container.value, {
-    onPick: (id) => {
+    onPick: (id, level) => {
       if (id) {
+        if (level !== undefined && level !== activeFloor.value.level) {
+          const floor = activeHouse.value.floors.find((item) => item.level === level);
+          if (floor) selectFloor(floor.id);
+        }
         selectFurniture(id);
         clearHighlight();
       } else {
@@ -55,34 +91,35 @@ onMounted(() => {
       }
     },
   });
-  scene.updateProject(state.project);
+  lastHouseId = activeHouse.value.id;
+  scene.updateHouse(activeHouse.value);
+  applyFloor();
   scene.setCutaway(cutaway.value);
   syncSelection();
   syncHighlight();
   if (state.focusRequest) {
-    scene.focusOn(state.focusRequest.x, state.focusRequest.y, state.focusRequest.zoom);
+    scene.focusOn(state.focusRequest.x, state.focusRequest.y, state.focusRequest.level, state.focusRequest.zoom);
   }
 });
 
 watch(
-  () => state.project.floor.shapes,
+  () => state.workspace.houses,
   () => scheduleRebuild(),
   { deep: true },
 );
+
 watch(
-  () => state.project.floor.walls,
-  () => scheduleRebuild(),
-  { deep: true },
-);
-watch(
-  () => state.project.floor.openings,
-  () => scheduleRebuild(),
-  { deep: true },
-);
-watch(
-  () => state.project.furniture,
-  () => scheduleRebuild(),
-  { deep: true },
+  () => [state.activeHouseId, state.activeFloorId, floorMode.value] as const,
+  () => {
+    if (lastHouseId !== activeHouse.value.id) {
+      scheduleRebuild();
+      return;
+    }
+    applyFloor();
+    if (state.focusRequest) {
+      scene?.focusOn(state.focusRequest.x, state.focusRequest.y, state.focusRequest.level, state.focusRequest.zoom);
+    }
+  },
 );
 
 watch(() => state.selection, syncSelection, { deep: true });
@@ -96,7 +133,7 @@ watch(
 watch(
   () => state.focusRequest,
   (request) => {
-    if (request) scene?.focusOn(request.x, request.y, request.zoom);
+    if (request) scene?.focusOn(request.x, request.y, request.level, request.zoom);
   },
 );
 
@@ -110,6 +147,11 @@ function toggleCutaway(): void {
   cutaway.value = !cutaway.value;
   scene?.setCutaway(cutaway.value);
 }
+
+function setFloorMode(mode: FloorDisplayMode): void {
+  floorMode.value = mode;
+  applyFloor();
+}
 </script>
 
 <template>
@@ -121,12 +163,18 @@ function toggleCutaway(): void {
         <span class="live-dot" />
         立体视图 · 实时建模
       </div>
-      <h2>{{ state.project.name }}</h2>
+      <h2>{{ activeHouse.name }}</h2>
       <div class="scene-metrics">
-        <span><b>{{ stats.area }}</b> 面积</span>
-        <span><b>{{ stats.walls }}</b> 墙体</span>
+        <span><b>{{ stats.area }}</b> {{ activeFloor.name }} 面积</span>
+        <span><b>{{ stats.walls }}</b> 本层墙体</span>
+        <span><b>{{ stats.floors }}</b> 层</span>
         <span><b>{{ stats.items }}</b> 类物品</span>
       </div>
+    </div>
+
+    <div class="floor-mode-switch">
+      <button :class="{ active: floorMode === 'whole' }" @click="setFloorMode('whole')">整栋</button>
+      <button :class="{ active: floorMode === 'active' }" @click="setFloorMode('active')">当前层</button>
     </div>
 
     <div class="scene-actions">
@@ -275,6 +323,34 @@ function toggleCutaway(): void {
   background: rgba(27, 37, 30, 0.34);
   border: 1px solid rgba(255, 255, 255, 0.12);
   backdrop-filter: blur(12px);
+}
+
+.floor-mode-switch {
+  position: absolute;
+  right: 22px;
+  top: 154px;
+  z-index: 2;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 9px;
+  background: rgba(27, 37, 30, 0.34);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(12px);
+}
+
+.floor-mode-switch button {
+  height: 27px;
+  padding: 0 9px;
+  border-radius: 6px;
+  color: rgba(246, 241, 231, 0.65);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.floor-mode-switch button.active {
+  background: rgba(255, 253, 247, 0.92);
+  color: #34433a;
 }
 
 .scene-control {
