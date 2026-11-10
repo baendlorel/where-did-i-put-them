@@ -1,1 +1,15 @@
 增加浴缸、坐便器、小便池、水池等家具，用来做卫生间。
+
+数据模型升级为 schema v2：Workspace.houses[].floors[]。
+旧版单住宅 project.json 会自动迁移为：
+一栋房子
+一个 1F 楼层
+原有地面、墙体、门窗、家具和物品完整保留
+新数据写入 workspace.json。
+API 和 WebSocket 同步协议统一改为 workspace：
+/api/project → /api/workspace
+project:update → workspace:update
+project:ack → workspace:ack
+project:updated → workspace:updated
+
+别兼容，旧数据直接做一次性迁移。因为我还没发布
