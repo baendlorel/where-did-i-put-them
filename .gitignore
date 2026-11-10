@@ -1,0 +1,9 @@
+node_modules
+dist
+.DS_Store
+*.log
+apps/server/data/project.json
+apps/server/data/*.tmp
+playwright-report
+test-results
+screenshots
