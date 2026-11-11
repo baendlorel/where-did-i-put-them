@@ -3,6 +3,7 @@ dist
 .DS_Store
 *.log
 apps/server/data/project.json
+apps/server/data/project.legacy.json
 apps/server/data/workspace.json
 apps/server/data/*.tmp
 playwright-report

@@ -61,7 +61,7 @@ export function createStarterHouse(name = '新的家'): House {
 
 export function createEmptyWorkspace(): Workspace {
   return {
-    schemaVersion: 2,
+    schemaVersion: 1,
     id: createId('workspace'),
     revision: 0,
     updatedAt: now(),
@@ -574,7 +574,7 @@ export function createDemoWorkspace(): Workspace {
   };
 
   return {
-    schemaVersion: 2,
+    schemaVersion: 1,
     id: 'workspace_home',
     revision: 1,
     updatedAt: now(),

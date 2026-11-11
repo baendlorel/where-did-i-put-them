@@ -184,16 +184,29 @@ wdipt --help
 ├── scripts                    # TypeScript 构建/打包/发布脚本
 │   ├── build.ts               # shared → web → wdipt，并复制前端资源
 │   ├── package.ts             # npm pack / publish，校验 tarball
+│   ├── migrate-legacy.ts      # 旧版 project.json 一次性迁移
 │   └── lib                    # 子进程与构建辅助
 ├── docs                       # 预览图
 └── package.json
 ```
 
+### 从旧版单住宅数据迁移
+
+旧版 `project.json` **不会**在运行时被自动读取或兼容。需要手动执行一次迁移：
+
+```bash
+pnpm migrate:legacy
+```
+
+脚本默认读取 `apps/server/data/project.json`，生成当前 schema 的 `workspace.json`，并将旧文件归档为 `project.legacy.json`。如果目标文件已存在，脚本会拒绝覆盖；确认需要替换时加 `--force`。也可以用 `--from` / `--to` 指定路径。
+
+迁移完成后，服务器只接受 `schemaVersion: 1` 的 workspace；单住宅格式请求会直接返回 400。
+
 ## 数据模型
 
 ```ts
 interface Workspace {
-  schemaVersion: 2;
+  schemaVersion: 1;
   id: string;
   revision: number;
   updatedAt: string;
@@ -278,7 +291,7 @@ interface StoredItem {
 
 ```bash
 pnpm typecheck   # 三个 workspace 包 + scripts TypeScript 类型检查
-pnpm test        # 共享几何/多楼层 11 项 + 服务端 API 5 项
+pnpm test        # 共享几何/多楼层 11 项 + 服务端 API 6 项
 pnpm build       # shared(tsdown) -> web(vite) -> wdipt(tsdown) -> 装配 CLI
 pnpm pack:npm    # 构建、打包并校验 npm tarball
 ```
@@ -292,7 +305,7 @@ pnpm pack:npm    # 构建、打包并校验 npm tarball
 - 门窗沿墙定位、门楣与窗台保留；
 - 多住宅 / 多楼层演示数据与楼梯数据；
 - 跨住宅、跨楼层的物品与备注检索；
-- 服务端首次播种、工作区 PUT 规范化、revision 递增、错误数据拒绝、旧版单住宅文件迁移和 HTTP 搜索。
+- 服务端首次播种、工作区 PUT 规范化、revision 递增、旧格式请求拒绝、旧文件启动保护和 HTTP 搜索。
 
 ## 设计说明
 

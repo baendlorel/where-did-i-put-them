@@ -214,49 +214,19 @@ function normalizeHouse(raw: unknown): House | null {
   };
 }
 
-function legacyWorkspace(input: Record<string, unknown>): Workspace {
-  const legacyFloor = {
-    ...(input.floor as Record<string, unknown>),
-    id: 'floor_legacy_1',
-    name: floorName(0),
-    level: 0,
-    furniture: input.furniture,
-    stairs: [],
-  };
-  const floor = normalizeFloor(legacyFloor, 0);
-  if (!floor) throw new Error('Legacy project has no usable floor');
-  return {
-    schemaVersion: 2,
-    id: asString(input.id, '', 80) || createId('workspace'),
-    revision: Math.max(0, Math.round(asNumber(input.revision, 0))),
-    updatedAt: new Date().toISOString(),
-    houses: [
-      {
-        id: 'house_legacy_1',
-        name: asString(input.name, '我的住宅', 120).trim() || '我的住宅',
-        floors: [floor],
-      },
-    ],
-  };
-}
-
 /**
- * Accept a workspace document from disk or the network, strip unexpected
- * fields, migrate the single-project schema and guarantee cross references
- * (openings -> walls, floor levels).
+ * Accept a workspace document, strip unexpected fields and guarantee
+ * cross references (openings -> walls, floor levels). Legacy single-project
+ * files are intentionally rejected here and handled by the one-shot migration
+ * command instead.
  */
-export function normalizeWorkspace(raw: unknown, fallback?: Workspace): Workspace {
-  if (!raw || typeof raw !== 'object') {
-    if (fallback) return structuredClone(fallback);
-    throw new Error('Invalid workspace payload');
-  }
+export function normalizeWorkspace(raw: unknown): Workspace {
+  if (!raw || typeof raw !== 'object') throw new Error('Invalid workspace payload');
   const input = raw as Record<string, unknown>;
-
+  if (input.schemaVersion !== 1) {
+    throw new Error('Unsupported workspace schema; expected schemaVersion 1');
+  }
   if (!Array.isArray(input.houses)) {
-    if (input.floor && typeof input.floor === 'object') {
-      return legacyWorkspace(input);
-    }
-    if (fallback) return structuredClone(fallback);
     throw new Error('Workspace.houses is required');
   }
 
@@ -264,15 +234,12 @@ export function normalizeWorkspace(raw: unknown, fallback?: Workspace): Workspac
     .slice(0, MAX_HOUSES)
     .map(normalizeHouse)
     .filter((house): house is House => Boolean(house));
-  if (houses.length === 0) {
-    if (fallback) return structuredClone(fallback);
-    throw new Error('Workspace needs at least one valid house');
-  }
+  if (houses.length === 0) throw new Error('Workspace needs at least one valid house');
 
   return {
-    schemaVersion: 2,
-    id: asString(input.id, '', 80) || fallback?.id || createId('workspace'),
-    revision: Math.max(0, Math.round(asNumber(input.revision, fallback?.revision ?? 0))),
+    schemaVersion: 1,
+    id: asString(input.id, '', 80) || createId('workspace'),
+    revision: Math.max(0, Math.round(asNumber(input.revision, 0))),
     updatedAt: new Date().toISOString(),
     houses,
   };

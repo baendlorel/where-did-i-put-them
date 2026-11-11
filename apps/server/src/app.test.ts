@@ -1,6 +1,6 @@
 import { createDemoWorkspace } from '@shijian/shared';
 import type { Workspace } from '@shijian/shared';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -82,7 +82,23 @@ describe('wdipt api', () => {
     await app.close();
   });
 
-  it('migrates a legacy single-project file to the multi-house workspace', async () => {
+  it('rejects single-project payloads on the workspace API', async () => {
+    const { app } = await boot();
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/workspace',
+      payload: {
+        schemaVersion: 1,
+        name: '旧宅',
+        floor: { shapes: [], walls: [], openings: [] },
+        furniture: [],
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it('does not auto-migrate legacy files; directs users to the migration command', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'shijian-legacy-'));
     cleanups.push(dir);
     await writeFile(
@@ -91,36 +107,13 @@ describe('wdipt api', () => {
         schemaVersion: 1,
         id: 'legacy_project',
         name: '旧宅',
-        revision: 7,
-        updatedAt: new Date().toISOString(),
-        floor: {
-          shapes: [
-            {
-              id: 'legacy_shape',
-              kind: 'rect',
-              x: 0,
-              y: 0,
-              width: 6,
-              height: 5,
-              rotation: 0,
-              mode: 'union',
-            },
-          ],
-          walls: [],
-          openings: [],
-        },
+        floor: { shapes: [], walls: [], openings: [] },
         furniture: [],
       }),
       'utf8',
     );
-    const { app } = await buildApp({ dataDir: dir, webRoot: null, logger: false });
-    const workspace = (await app.inject({ method: 'GET', url: '/api/workspace' })).json<Workspace>();
-    expect(workspace.houses).toHaveLength(1);
-    expect(workspace.houses[0].name).toBe('旧宅');
-    expect(workspace.houses[0].floors[0].name).toBe('1F');
-    expect(workspace.houses[0].floors[0].shapes[0].width).toBe(6);
-    const persisted = JSON.parse(await readFile(path.join(dir, 'workspace.json'), 'utf8')) as Workspace;
-    expect(persisted.schemaVersion).toBe(2);
-    await app.close();
+    await expect(buildApp({ dataDir: dir, webRoot: null, logger: false })).rejects.toThrow(
+      /migrate:legacy/,
+    );
   });
 });

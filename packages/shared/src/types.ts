@@ -97,7 +97,7 @@ export interface House {
 
 /** The persisted, synced document. It can contain many independent houses. */
 export interface Workspace {
-  schemaVersion: 2;
+  schemaVersion: 1;
   id: string;
   revision: number;
   updatedAt: string;

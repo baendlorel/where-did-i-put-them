@@ -1,5 +1,6 @@
 import { createDemoWorkspace } from '@shijian/shared';
 import type { Workspace } from '@shijian/shared';
+import { existsSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { normalizeWorkspace } from './validation';
@@ -7,7 +8,7 @@ import { normalizeWorkspace } from './validation';
 function isWorkspacePayload(raw: unknown): raw is Record<string, unknown> {
   if (!raw || typeof raw !== 'object') return false;
   const input = raw as Record<string, unknown>;
-  return Array.isArray(input.houses) || Boolean(input.floor && typeof input.floor === 'object');
+  return input.schemaVersion === 1 && Array.isArray(input.houses);
 }
 
 export class WorkspaceStore {
@@ -25,20 +26,20 @@ export class WorkspaceStore {
     await mkdir(dataDir, { recursive: true });
     const filePath = path.join(dataDir, 'workspace.json');
     const legacyPath = path.join(dataDir, 'project.json');
-    let workspace: Workspace | null = null;
+    let workspace: Workspace;
 
-    for (const candidate of [filePath, legacyPath]) {
-      try {
-        const raw = JSON.parse(await readFile(candidate, 'utf8')) as unknown;
-        workspace = normalizeWorkspace(raw);
-        break;
-      } catch {
-        // Try the next file. A missing workspace.json falls back to the
-        // single-project file written by older versions.
+    if (!existsSync(filePath)) {
+      if (existsSync(legacyPath)) {
+        throw new Error(
+          'Legacy project.json detected. Run `pnpm migrate:legacy` once before starting wdipt.',
+        );
       }
+      workspace = createDemoWorkspace();
+    } else {
+      const raw = JSON.parse(await readFile(filePath, 'utf8')) as unknown;
+      workspace = normalizeWorkspace(raw);
     }
 
-    if (!workspace) workspace = createDemoWorkspace();
     const store = new WorkspaceStore(filePath, workspace);
     await store.persist(workspace);
     return store;
@@ -53,7 +54,7 @@ export class WorkspaceStore {
     const normalized = normalizeWorkspace(raw);
     const next: Workspace = {
       ...normalized,
-      schemaVersion: 2,
+      schemaVersion: 1,
       id: this.workspace.id,
       revision: this.workspace.revision + 1,
       updatedAt: new Date().toISOString(),

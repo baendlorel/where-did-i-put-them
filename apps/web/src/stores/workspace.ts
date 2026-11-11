@@ -119,8 +119,8 @@ let toastSeq = 0;
 
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const now = () => new Date().toISOString();
-const LOCAL_KEY = 'shijian:workspace:v2';
-const ACTIVE_KEY = 'shijian:active:v2';
+const LOCAL_KEY = 'shijian:workspace:v1';
+const ACTIVE_KEY = 'shijian:active:v1';
 
 function persistLocal(): void {
   try {
