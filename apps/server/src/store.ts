@@ -1,8 +1,20 @@
 import { createDemoWorkspace } from '@shijian/shared';
-import type { Workspace } from '@shijian/shared';
+import type { DeleteChallenge, TrashEntry, Workspace } from '@shijian/shared';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
+import type Database from 'better-sqlite3';
+import {
+  createDeleteChallenge,
+  listTrash,
+  openDatabase,
+  permanentlyDeleteHouse,
+  readWorkspace,
+  restoreHouse,
+  trashHouse,
+  writeActiveWorkspace,
+  writeInitialWorkspace,
+} from './database';
 import { normalizeWorkspace } from './validation';
 
 function isWorkspacePayload(raw: unknown): raw is Record<string, unknown> {
@@ -11,38 +23,67 @@ function isWorkspacePayload(raw: unknown): raw is Record<string, unknown> {
   return input.schemaVersion === 1 && Array.isArray(input.houses);
 }
 
-export class WorkspaceStore {
-  private workspace: Workspace;
-  private writeChain: Promise<void> = Promise.resolve();
+export interface TrashSnapshot {
+  workspace: Workspace;
+  trash: TrashEntry[];
+}
 
+export class WorkspaceStore {
   private constructor(
-    private readonly filePath: string,
-    workspace: Workspace,
-  ) {
-    this.workspace = workspace;
-  }
+    private readonly db: Database.Database,
+    private workspace: Workspace,
+  ) {}
 
   static async open(dataDir: string): Promise<WorkspaceStore> {
     await mkdir(dataDir, { recursive: true });
-    const filePath = path.join(dataDir, 'workspace.json');
+    const dbPath = path.join(dataDir, 'wdipt.db');
+    const jsonPath = path.join(dataDir, 'workspace.json');
     const legacyPath = path.join(dataDir, 'project.json');
-    let workspace: Workspace;
 
-    if (!existsSync(filePath)) {
+    if (!existsSync(dbPath)) {
+      if (existsSync(jsonPath)) {
+        throw new Error(
+          'JSON workspace detected. Run `pnpm migrate:json` once before starting wdipt.',
+        );
+      }
       if (existsSync(legacyPath)) {
         throw new Error(
-          'Legacy project.json detected. Run `pnpm migrate:legacy` once before starting wdipt.',
+          'Legacy project.json detected. Run `pnpm migrate:legacy`, then `pnpm migrate:json`.',
+        );
+      }
+    }
+
+    const db = openDatabase(dbPath);
+    let workspace = readWorkspace(db);
+
+    if (!workspace) {
+      if (existsSync(jsonPath)) {
+        db.close();
+        throw new Error(
+          'JSON workspace detected. Run `pnpm migrate:json` once before starting wdipt.',
         );
       }
       workspace = createDemoWorkspace();
-    } else {
-      const raw = JSON.parse(await readFile(filePath, 'utf8')) as unknown;
-      workspace = normalizeWorkspace(raw);
+      writeInitialWorkspace(db, workspace);
+      workspace = readWorkspace(db);
+    }
+    if (!workspace) {
+      db.close();
+      throw new Error('Unable to initialize SQLite workspace');
     }
 
-    const store = new WorkspaceStore(filePath, workspace);
-    await store.persist(workspace);
-    return store;
+    return new WorkspaceStore(db, workspace);
+  }
+
+  /** Used by the one-shot JSON -> SQLite migration script. */
+  static async importWorkspace(dataDir: string, workspace: Workspace): Promise<void> {
+    await mkdir(dataDir, { recursive: true });
+    const db = openDatabase(path.join(dataDir, 'wdipt.db'));
+    try {
+      writeInitialWorkspace(db, workspace);
+    } finally {
+      db.close();
+    }
   }
 
   get(): Workspace {
@@ -59,18 +100,41 @@ export class WorkspaceStore {
       revision: this.workspace.revision + 1,
       updatedAt: new Date().toISOString(),
     };
-    this.workspace = next;
-    await this.persist(next);
-    return next;
+    writeActiveWorkspace(this.db, next);
+    this.workspace = readWorkspace(this.db) ?? next;
+    return this.workspace;
   }
 
-  private async persist(workspace: Workspace): Promise<void> {
-    const payload = JSON.stringify(workspace, null, 2);
-    const tempPath = `${this.filePath}.${process.pid}.tmp`;
-    this.writeChain = this.writeChain.then(async () => {
-      await writeFile(tempPath, payload, 'utf8');
-      await rename(tempPath, this.filePath);
-    });
-    await this.writeChain;
+  listTrash(): TrashEntry[] {
+    return listTrash(this.db);
+  }
+
+  trashHouse(houseId: string): TrashSnapshot {
+    trashHouse(this.db, houseId);
+    const workspace = readWorkspace(this.db);
+    if (!workspace) throw new Error('Workspace missing after trash operation');
+    this.workspace = workspace;
+    return { workspace, trash: this.listTrash() };
+  }
+
+  restoreHouse(houseId: string): TrashSnapshot {
+    restoreHouse(this.db, houseId);
+    const workspace = readWorkspace(this.db);
+    if (!workspace) throw new Error('Workspace missing after restore operation');
+    this.workspace = workspace;
+    return { workspace, trash: this.listTrash() };
+  }
+
+  createDeleteChallenge(houseId: string): DeleteChallenge {
+    return createDeleteChallenge(this.db, houseId);
+  }
+
+  permanentlyDelete(houseId: string, challengeId: string, code: string): TrashEntry[] {
+    permanentlyDeleteHouse(this.db, houseId, challengeId, code);
+    return this.listTrash();
+  }
+
+  close(): void {
+    if (this.db.open) this.db.close();
   }
 }

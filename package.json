@@ -12,6 +12,7 @@
     "test": "pnpm -r test",
     "start": "pnpm --filter wdipt start",
     "migrate:legacy": "tsx scripts/migrate-legacy.ts",
+    "migrate:json": "tsx scripts/migrate-json-to-sqlite.ts",
     "pack:npm": "tsx scripts/package.ts",
     "publish:npm": "tsx scripts/package.ts --publish"
   },
@@ -24,6 +25,6 @@
   },
   "packageManager": "pnpm@11.12.0",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   }
 }

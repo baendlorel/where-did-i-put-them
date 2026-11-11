@@ -5,7 +5,8 @@
 - **多住宅**：工作区可以保存多栋房子，右上角「我的房子」切换
 - **多楼层**：每栋房子可以有多层，顶层自动挖出楼梯洞口
 - **楼梯**：平面绘制踏步、UP 箭头，3D 自动生成踏步、扶手和楼层连接
-- **后端**：Fastify + TypeScript + WebSocket，JSON 文件持久化
+- **回收站**：删除的住宅先进入回收站；永久删除必须输入 4 位随机验证码
+- **后端**：Fastify + TypeScript + WebSocket，SQLite 持久化
 - **前端**：Vue 3 + TypeScript + Three.js + Canvas 2D
 - **工程**：pnpm workspace monorepo，tsdown 打包，共享领域模型与几何算法
 - **发布**：`wdipt` npm CLI，一条命令启动完整应用
@@ -20,11 +21,14 @@
 
 ![多住宅菜单](docs/preview-houses.png)
 
+![回收站与永久删除验证码](docs/preview-trash.png)
+
 ## 功能
 
 ### 1. 多住宅与多楼层
 
 - 右上角「我的房子」菜单可以新建、切换多栋独立住宅；每栋房子有自己的名称、楼层、家具和物品。
+- 删除住宅会先进入「回收站」，恢复后回到房子列表；永久删除时必须输入服务端生成的 4 位随机验证码。
 - 每栋房子支持最多 16 层，顶部楼层条可以切换、复制或新建楼层，也可以删除当前层并重新编号。
 - 顶部楼层条显示所有楼层，当前楼层高亮；切换到某一层即编辑该层平面。
 - 楼梯工具位于左侧结构栏，也可以按 `S`；楼梯默认连接上一层，在上层地板自动开洞。
@@ -70,14 +74,14 @@
 ### 5. 实时协同
 
 - 所有修改经 450ms 防抖后通过 WebSocket 发给服务端。
-- 服务端校验并规范化工作区数据，写入 `apps/server/data/workspace.json`，再广播给其他窗口。
+- 服务端校验并规范化工作区数据，在 SQLite 事务中写入 `apps/server/data/wdipt.db`，再广播给其他窗口。
 - 保存中 / 已同步 / 仅本机 / 同步异常状态实时显示。
 - WebSocket 不可用时回退到 `PUT /api/workspace`；断线后自动重连。
 - 多窗口同时编辑采用最后写入优先；本地未发送的修改会显示提示并继续保存。
 
 ## 快速开始
 
-要求 Node.js >= 20、pnpm 11。
+要求 Node.js >= 22、pnpm 11。SQLite 使用最新的 `better-sqlite3`（当前内置 SQLite 3.53.4）。
 
 ```bash
 pnpm install
@@ -109,7 +113,7 @@ pnpm start
 | --- | --- | --- | --- |
 | `PORT` | `8787` | `8787` | 服务端口 |
 | `HOST` | `0.0.0.0` | `0.0.0.0` | 监听地址 |
-| `DATA_DIR` | `apps/server/data` | `~/.wdipt` | 项目 JSON 目录 |
+| `DATA_DIR` | `apps/server/data` | `~/.wdipt` | SQLite 数据库目录 |
 | `WEB_DIST` | `apps/web/dist` | 包内 `dist/web` | 前端静态资源目录 |
 
 ### npm 命令 `wdipt`
@@ -163,42 +167,51 @@ wdipt --help
 ```text
 .
 ├── apps
-│   ├── server                 # wdipt CLI：Fastify + WebSocket + JSON 持久化
+│   ├── server                 # wdipt CLI：Fastify + WebSocket + SQLite
 │   │   ├── src
 │   │   │   ├── cli.ts         # bin 入口、参数解析、--help / --version
 │   │   │   ├── start.ts       # 启动、端口识别、优雅退出
 │   │   │   ├── app.ts         # 路由、静态资源、WebSocket hub
-│   │   │   ├── store.ts       # 原子写入与版本递增
+│   │   │   ├── database.ts    # SQLite schema、事务、回收站与验证码
+│   │   │   ├── store.ts       # 数据库生命周期与 workspace 快照
 │   │   │   └── validation.ts  # 网络输入规范化
 │   │   └── tsdown.config.ts   # 后端 bundle 配置与依赖内联
 │   └── web                    # Vue 3 前端
 │       └── src
-│           ├── components     # 顶栏、房子菜单、楼层条、2D 画布、3D 场景、Inspector、搜索
+│           ├── components     # 顶栏、房子菜单、楼层条、回收站、2D/3D、Inspector、搜索
 │           ├── lib
 │           │   ├── plan.ts    # Canvas 2D 渲染、楼梯与命中测试
 │           │   ├── realtime.ts# WebSocket 同步与 HTTP 回退
 │           │   └── three      # 多层场景、楼梯、房屋、家具、程序化纹理
-│           └── stores         # 工作区、楼层、物品与撤销栈
+│           └── stores         # 工作区、楼层、物品、回收站与撤销栈
 ├── packages
 │   └── shared                 # 类型、几何布尔、家具目录、演示数据、搜索
 ├── scripts                    # TypeScript 构建/打包/发布脚本
 │   ├── build.ts               # shared → web → wdipt，并复制前端资源
 │   ├── package.ts             # npm pack / publish，校验 tarball
-│   ├── migrate-legacy.ts      # 旧版 project.json 一次性迁移
+│   ├── migrate-legacy.ts      # project.json → workspace.json
+│   ├── migrate-json-to-sqlite.ts # workspace.json → wdipt.db
 │   └── lib                    # 子进程与构建辅助
 ├── docs                       # 预览图
 └── package.json
 ```
 
-### 从旧版单住宅数据迁移
+### 数据迁移
 
-旧版 `project.json` **不会**在运行时被自动读取或兼容。需要手动执行一次迁移：
+旧版单住宅 `project.json` 需要两步迁移：
 
 ```bash
-pnpm migrate:legacy
+pnpm migrate:legacy   # project.json -> workspace.json
+pnpm migrate:json     # workspace.json -> wdipt.db
 ```
 
-脚本默认读取 `apps/server/data/project.json`，生成当前 schema 的 `workspace.json`，并将旧文件归档为 `project.legacy.json`。如果目标文件已存在，脚本会拒绝覆盖；确认需要替换时加 `--force`。也可以用 `--from` / `--to` 指定路径。
+如果数据已经是当前 schema 的 `workspace.json`，只需执行：
+
+```bash
+pnpm migrate:json
+```
+
+`migrate:json` 默认把 `workspace.json` 导入 `apps/server/data/wdipt.db`，并把 JSON 归档为 `workspace.legacy.json`。服务端运行时只读取 SQLite，不会在启动时兼容 JSON 文件；如果只发现 JSON 而没有数据库，会拒绝启动并提示先迁移。
 
 迁移完成后，服务器只接受 `schemaVersion: 1` 的 workspace；单住宅格式请求会直接返回 400。
 
@@ -240,6 +253,19 @@ interface StoredItem {
 
 坐标单位为米。平面坐标 `(x, y)` 映射到 Three.js 的 `(x, z)`，旋转角度取反；楼层高度为 2.85 m。
 
+### SQLite 存储
+
+数据目录中是 `wdipt.db`，使用最新 `better-sqlite3`（内置 SQLite 3.53.4），开启 WAL、外键和事务。
+
+| 表 | 用途 |
+| --- | --- |
+| `workspace_meta` | 单行 workspace 元数据：schema、revision、更新时间 |
+| `houses` | 住宅。`deleted_at IS NULL` 为正常住宅，非空为回收站 |
+| `floors` | 楼层。`data` 列保存 shapes / walls / openings / furniture / stairs |
+| `delete_challenges` | 永久删除的 4 位验证码，5 分钟有效 |
+
+回收站不属于可同步的 `Workspace`，由服务端单独管理；普通 workspace 保存不能删除住宅，必须走回收站接口。
+
 ### 几何流水线
 
 1. 每个 `FloorShape` 转为世界坐标多边形环（椭圆用 64 段离散）。
@@ -260,7 +286,7 @@ interface StoredItem {
 服务端返回：
 
 ```json
-{ "type": "welcome", "workspace": {}, "clients": 2 }
+{ "type": "welcome", "workspace": {}, "trash": [], "clients": 2 }
 ```
 
 保存时发送完整工作区快照：
@@ -274,7 +300,7 @@ interface StoredItem {
 }
 ```
 
-服务端写入后向发送方回 `workspace:ack`（revision、updatedAt），向其他客户端广播 `workspace:updated`。另有 `presence`、`ping` / `pong` 和 `error` 消息。
+服务端写入后向发送方回 `workspace:ack`（revision、updatedAt），向其他客户端广播 `workspace:updated`。回收站变化广播 `trash:updated`。另有 `presence`、`ping` / `pong` 和 `error` 消息。
 
 完整工作区快照适合当前规模（多栋房子、多层，约几十 KB），避免了复杂 CRDT；服务端负责版本递增与最后写入优先。
 
@@ -282,21 +308,28 @@ interface StoredItem {
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/api/health` | 健康状态、客户端数、房屋/楼层数、当前 revision |
-| `GET` | `/api/workspace` | 读取整个工作区 |
+| `GET` | `/api/health` | 健康状态、客户端数、房屋/楼层数、回收站数量、当前 revision |
+| `GET` | `/api/workspace` | 读取整个工作区（仅正常住宅） |
 | `PUT` | `/api/workspace` | 校验并保存工作区，广播给 WebSocket 客户端 |
 | `GET` | `/api/search?q=护照` | 跨住宅、楼层的物品检索 |
+| `GET` | `/api/trash` | 回收站列表 |
+| `POST` | `/api/houses/:id/trash` | 把住宅移入回收站 |
+| `POST` | `/api/trash/:id/restore` | 从回收站恢复 |
+| `POST` | `/api/trash/:id/challenge` | 生成 4 位永久删除验证码，5 分钟有效 |
+| `DELETE` | `/api/trash/:id` | 校验 `challengeId` + `code` 后永久删除 |
+
+普通 `PUT /api/workspace` 不允许移除住宅，必须走 `/api/houses/:id/trash`，避免绕过验证码直接永久删除。
 
 ## 测试与构建
 
 ```bash
 pnpm typecheck   # 三个 workspace 包 + scripts TypeScript 类型检查
-pnpm test        # 共享几何/多楼层 11 项 + 服务端 API 6 项
+pnpm test        # 共享几何/多楼层 11 项 + 服务端 API 10 项
 pnpm build       # shared(tsdown) -> web(vite) -> wdipt(tsdown) -> 装配 CLI
 pnpm pack:npm    # 构建、打包并校验 npm tarball
 ```
 
-`tsdown` 只安装在仓库根目录，workspace 包通过 pnpm 的 root bin 解析执行。后端 bundle 会内联 `@shijian/shared` 与 `polygon-clipping`，外部化 Fastify / ws 等 npm 运行时依赖。
+`tsdown` 只安装在仓库根目录，workspace 包通过 pnpm 的 root bin 解析执行。后端 bundle 会内联 `@shijian/shared` 与 `polygon-clipping`，外部化 Fastify / ws / better-sqlite3 等 npm 运行时依赖。
 
 测试覆盖：
 
@@ -305,7 +338,8 @@ pnpm pack:npm    # 构建、打包并校验 npm tarball
 - 门窗沿墙定位、门楣与窗台保留；
 - 多住宅 / 多楼层演示数据与楼梯数据；
 - 跨住宅、跨楼层的物品与备注检索；
-- 服务端首次播种、工作区 PUT 规范化、revision 递增、旧格式请求拒绝、旧文件启动保护和 HTTP 搜索。
+- 服务端首次播种、SQLite 持久化、工作区 PUT 规范化、revision 递增、旧格式请求拒绝、旧文件启动保护、HTTP 搜索；
+- 回收站移入/恢复、最后一栋住宅保护、4 位验证码永久删除、普通保存不能绕过回收站。
 
 ## 设计说明
 

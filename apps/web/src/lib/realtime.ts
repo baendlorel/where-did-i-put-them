@@ -5,6 +5,7 @@ import {
   replaceWorkspace,
   setClients,
   setSync,
+  setTrash,
   state,
   markSaved,
 } from '../stores/workspace';
@@ -98,6 +99,7 @@ function connect(): void {
 
     if (message.type === 'welcome') {
       setClients(Number(message.clients ?? 1));
+      if (Array.isArray(message.trash)) setTrash(message.trash);
       const remote = message.workspace as typeof state.workspace;
       if (remote && remote.revision > state.workspace.revision && !dirty) {
         replaceWorkspace(remote, { remote: true });
@@ -105,6 +107,11 @@ function connect(): void {
       }
       setSync('saved');
       if (dirty) scheduleFlush(100);
+      return;
+    }
+
+    if (message.type === 'trash:updated') {
+      if (Array.isArray(message.trash)) setTrash(message.trash);
       return;
     }
 

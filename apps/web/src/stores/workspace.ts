@@ -11,6 +11,7 @@ import {
 } from '@shijian/shared';
 import type {
   BooleanMode,
+  DeleteChallenge,
   FloorPlan,
   Furniture,
   FurnitureKind,
@@ -21,6 +22,7 @@ import type {
   Stair,
   StoredItem,
   Tool,
+  TrashEntry,
   ViewMode,
   Wall,
   Workspace,
@@ -74,6 +76,8 @@ interface WorkspaceState {
   searchOpen: boolean;
   searchQuery: string;
   helpOpen: boolean;
+  trashOpen: boolean;
+  trash: TrashEntry[];
   sync: SyncStatus;
   clients: number;
   lastSavedAt: string | null;
@@ -99,6 +103,8 @@ export const state = reactive<WorkspaceState>({
   searchOpen: false,
   searchQuery: '',
   helpOpen: false,
+  trashOpen: false,
+  trash: [],
   sync: 'connecting',
   clients: 1,
   lastSavedAt: null,
@@ -421,26 +427,93 @@ export function renameHouse(name: string): void {
   }, { key: `house-name-${houseId}` });
 }
 
-export function deleteHouse(id: string): void {
-  if (state.workspace.houses.length <= 1) {
-    pushToast('至少需要保留一栋房子', 'warn');
-    return;
+export interface TrashSnapshot {
+  workspace: Workspace;
+  trash: TrashEntry[];
+}
+
+async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers: Record<string, string> = { ...(init.headers as Record<string, string> | undefined) };
+  if (init.body !== undefined) headers['content-type'] = 'application/json';
+  const response = await fetch(path, { ...init, headers });
+  const body = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+  return body as T;
+}
+
+export function setTrash(entries: TrashEntry[]): void {
+  state.trash = entries;
+}
+
+export async function refreshTrash(): Promise<void> {
+  try {
+    state.trash = await apiRequest<TrashEntry[]>('/api/trash');
+  } catch {
+    // Keep the current snapshot if the trash endpoint is temporarily unavailable.
   }
-  const house = houseById(state.workspace, id);
-  if (!house) return;
-  commit((workspace) => {
-    workspace.houses = workspace.houses.filter((item) => item.id !== id);
+}
+
+export function openTrash(): void {
+  state.trashOpen = true;
+}
+
+export function closeTrash(): void {
+  state.trashOpen = false;
+}
+
+export async function trashHouse(id: string): Promise<boolean> {
+  try {
+    const snapshot = await apiRequest<TrashSnapshot>(`/api/houses/${encodeURIComponent(id)}/trash`, {
+      method: 'POST',
+    });
+    replaceWorkspace(snapshot.workspace, { remote: true });
+    state.trash = snapshot.trash;
+    state.selection = null;
+    state.highlight = null;
+    state.focusRequest = null;
+    markSaved(snapshot.workspace.revision, snapshot.workspace.updatedAt);
+    pushToast('已移入回收站，可在「我的房子 → 回收站」恢复', 'info');
+    return true;
+  } catch (error) {
+    pushToast(error instanceof Error ? error.message : '移入回收站失败', 'warn');
+    return false;
+  }
+}
+
+export async function restoreHouse(id: string): Promise<boolean> {
+  try {
+    const snapshot = await apiRequest<TrashSnapshot>(`/api/trash/${encodeURIComponent(id)}/restore`, {
+      method: 'POST',
+    });
+    replaceWorkspace(snapshot.workspace, { remote: true });
+    state.trash = snapshot.trash;
+    markSaved(snapshot.workspace.revision, snapshot.workspace.updatedAt);
+    pushToast('住宅已从回收站恢复', 'success');
+    return true;
+  } catch (error) {
+    pushToast(error instanceof Error ? error.message : '恢复住宅失败', 'warn');
+    return false;
+  }
+}
+
+export async function requestDeleteChallenge(id: string): Promise<DeleteChallenge> {
+  return apiRequest<DeleteChallenge>(`/api/trash/${encodeURIComponent(id)}/challenge`, {
+    method: 'POST',
   });
-  if (state.activeHouseId === id) {
-    const next = state.workspace.houses[0];
-    state.activeHouseId = next.id;
-    state.activeFloorId = next.floors[0].id;
-  }
-  state.selection = null;
-  state.highlight = null;
-  state.focusRequest = null;
-  persistActive();
-  pushToast(`已删除「${house.name}」`, 'info');
+}
+
+export async function permanentlyDeleteHouse(
+  id: string,
+  challengeId: string,
+  code: string,
+): Promise<boolean> {
+  const result = await apiRequest<{ trash: TrashEntry[] }>(`/api/trash/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    body: JSON.stringify({ challengeId, code }),
+  });
+  state.trash = result.trash;
+  pushToast('住宅已永久删除', 'info');
+  return true;
 }
 
 export function addFloor(mode: 'blank' | 'copy' = 'copy'): FloorPlan {
@@ -925,14 +998,19 @@ export function setClients(count: number): void {
 
 export async function loadWorkspace(): Promise<void> {
   try {
-    const response = await fetch('/api/workspace', { headers: { accept: 'application/json' } });
+    const [response, trashResponse] = await Promise.all([
+      fetch('/api/workspace', { headers: { accept: 'application/json' } }),
+      fetch('/api/trash', { headers: { accept: 'application/json' } }),
+    ]);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const workspace = (await response.json()) as Workspace;
     replaceWorkspace(workspace, { storedActive: readActive() });
+    state.trash = trashResponse.ok ? ((await trashResponse.json()) as TrashEntry[]) : [];
     state.sync = 'saved';
   } catch {
     const local = readLocal();
     replaceWorkspace(local ?? createDemoWorkspace(), { storedActive: readActive() });
+    state.trash = [];
     state.sync = 'offline';
     pushToast('未连接到同步服务，当前修改会保存在本机', 'warn');
   } finally {

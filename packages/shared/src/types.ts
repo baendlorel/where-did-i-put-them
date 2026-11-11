@@ -95,6 +95,20 @@ export interface House {
   floors: FloorPlan[];
 }
 
+/** A house moved to the recycle bin. Server-managed; not part of Workspace. */
+export interface TrashEntry {
+  id: string;
+  deletedAt: string;
+  house: House;
+}
+
+/** A short-lived challenge required for permanent deletion from the trash. */
+export interface DeleteChallenge {
+  challengeId: string;
+  code: string;
+  expiresAt: string;
+}
+
 /** The persisted, synced document. It can contain many independent houses. */
 export interface Workspace {
   schemaVersion: 1;

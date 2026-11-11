@@ -168,6 +168,10 @@ withDefaults(
       <path d="M12 11v5.5" />
       <circle cx="12" cy="7.8" r=".9" fill="currentColor" stroke="none" />
     </template>
+    <template v-else-if="name === 'shield'">
+      <path d="M12 3 19 6v5.3c0 4.2-2.7 7.8-7 9.7-4.3-1.9-7-5.5-7-9.7V6Z" />
+      <path d="m8.8 12.1 2.1 2.1 4.3-4.3" />
+    </template>
     <template v-else-if="name === 'chevron-down'">
       <path d="m6 9 6 6 6-6" />
     </template>

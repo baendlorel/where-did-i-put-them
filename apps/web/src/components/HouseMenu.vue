@@ -4,12 +4,15 @@ import AppIcon from './AppIcon.vue';
 import {
   activeHouse,
   createHouse,
+  openTrash,
   state,
   selectHouse,
+  trashHouse,
 } from '../stores/workspace';
 
 const open = ref(false);
 const root = ref<HTMLDivElement | null>(null);
+const trashing = ref(false);
 
 const totalFloors = computed(() =>
   state.workspace.houses.reduce((sum, house) => sum + house.floors.length, 0),
@@ -29,6 +32,19 @@ function choose(id: string): void {
 
 function addHouse(): void {
   createHouse('新的家');
+  open.value = false;
+}
+
+async function moveActiveToTrash(): Promise<void> {
+  if (trashing.value) return;
+  trashing.value = true;
+  const success = await trashHouse(activeHouse.value.id);
+  trashing.value = false;
+  if (success) open.value = false;
+}
+
+function showTrash(): void {
+  openTrash();
   open.value = false;
 }
 
@@ -86,7 +102,23 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', handleDocument
           <AppIcon name="plus" :size="15" />
           新建一栋房子
         </button>
-        <p class="house-hint">每栋房子可以有多个楼层，楼层在顶部切换。</p>
+        <div class="house-actions">
+          <button
+            class="house-action trash"
+            :disabled="trashing || state.workspace.houses.length <= 1"
+            :title="state.workspace.houses.length <= 1 ? '至少保留一栋住宅' : '将当前住宅移入回收站'"
+            @click="moveActiveToTrash"
+          >
+            <AppIcon name="trash" :size="14" />
+            {{ trashing ? '正在移入…' : '删除当前住宅' }}
+          </button>
+          <button class="house-action" @click="showTrash">
+            <AppIcon name="box" :size="14" />
+            回收站
+            <span v-if="state.trash.length" class="trash-count">{{ state.trash.length }}</span>
+          </button>
+        </div>
+        <p class="house-hint">删除的住宅会先进入回收站；永久删除需要输入验证码。</p>
       </div>
   </div>
 </template>
@@ -321,6 +353,62 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', handleDocument
   font-size: 8px;
   line-height: 1.6;
   color: #a1a7a0;
+}
+
+.house-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.house-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  color: var(--ink-soft);
+  font-size: 9px;
+  font-weight: 600;
+  transition: all 150ms ease;
+}
+
+.house-action:hover:not(:disabled) {
+  background: var(--paper);
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.house-action.trash {
+  color: var(--danger);
+  border-color: rgba(181, 87, 73, 0.18);
+}
+
+.house-action.trash:hover:not(:disabled) {
+  background: rgba(181, 87, 73, 0.06);
+  border-color: rgba(181, 87, 73, 0.35);
+}
+
+.house-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.trash-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+  font-size: 8px;
+  font-weight: 700;
 }
 
 @media (max-width: 1380px) {

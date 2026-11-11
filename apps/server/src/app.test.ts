@@ -116,4 +116,85 @@ describe('wdipt api', () => {
       /migrate:legacy/,
     );
   });
+
+  it('moves a house to trash and restores it', async () => {
+    const { app } = await boot();
+    const before = (await app.inject({ method: 'GET', url: '/api/workspace' })).json<Workspace>();
+    const target = before.houses[1];
+    const trashResponse = await app.inject({
+      method: 'POST',
+      url: `/api/houses/${target.id}/trash`,
+    });
+    expect(trashResponse.statusCode).toBe(200);
+    const trashed = trashResponse.json<{ workspace: Workspace; trash: { house: { id: string } }[] }>();
+    expect(trashed.workspace.houses).toHaveLength(1);
+    expect(trashed.trash).toHaveLength(1);
+    expect(trashed.trash[0].house.id).toBe(target.id);
+
+    const restoreResponse = await app.inject({
+      method: 'POST',
+      url: `/api/trash/${target.id}/restore`,
+    });
+    expect(restoreResponse.statusCode).toBe(200);
+    const restored = restoreResponse.json<{ workspace: Workspace; trash: unknown[] }>();
+    expect(restored.workspace.houses).toHaveLength(2);
+    expect(restored.trash).toHaveLength(0);
+    await app.close();
+  });
+
+  it('requires the last active house to stay out of the trash', async () => {
+    const { app } = await boot();
+    const before = (await app.inject({ method: 'GET', url: '/api/workspace' })).json<Workspace>();
+    await app.inject({ method: 'POST', url: `/api/houses/${before.houses[1].id}/trash` });
+    const last = await app.inject({
+      method: 'POST',
+      url: `/api/houses/${before.houses[0].id}/trash`,
+    });
+    expect(last.statusCode).toBe(409);
+    expect(last.json<{ error: string }>().error).toMatch(/至少需要保留一栋住宅/);
+    await app.close();
+  });
+
+  it('permanently deletes only after the 4-digit challenge', async () => {
+    const { app } = await boot();
+    const before = (await app.inject({ method: 'GET', url: '/api/workspace' })).json<Workspace>();
+    const target = before.houses[1];
+    await app.inject({ method: 'POST', url: `/api/houses/${target.id}/trash` });
+
+    const challengeResponse = await app.inject({
+      method: 'POST',
+      url: `/api/trash/${target.id}/challenge`,
+    });
+    expect(challengeResponse.statusCode).toBe(200);
+    const challenge = challengeResponse.json<{ challengeId: string; code: string }>();
+    expect(challenge.code).toMatch(/^\d{4}$/);
+
+    const wrong = await app.inject({
+      method: 'DELETE',
+      url: `/api/trash/${target.id}`,
+      payload: { challengeId: challenge.challengeId, code: '0000' },
+    });
+    expect(wrong.statusCode).toBe(400);
+
+    const right = await app.inject({
+      method: 'DELETE',
+      url: `/api/trash/${target.id}`,
+      payload: { challengeId: challenge.challengeId, code: challenge.code },
+    });
+    expect(right.statusCode).toBe(200);
+    const trash = (await app.inject({ method: 'GET', url: '/api/trash' })).json<unknown[]>();
+    expect(trash).toHaveLength(0);
+    await app.close();
+  });
+
+  it('does not allow a workspace save to remove an active house', async () => {
+    const { app } = await boot();
+    const before = (await app.inject({ method: 'GET', url: '/api/workspace' })).json<Workspace>();
+    const payload = JSON.parse(JSON.stringify(before)) as Workspace;
+    payload.houses = payload.houses.slice(0, 1);
+    const response = await app.inject({ method: 'PUT', url: '/api/workspace', payload });
+    expect(response.statusCode).toBe(409);
+    expect(response.json<{ error: string }>().error).toMatch(/回收站/);
+    await app.close();
+  });
 });

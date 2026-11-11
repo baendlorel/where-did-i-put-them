@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
+import { WorkspaceError } from './database';
 import { WorkspaceStore } from './store';
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -145,6 +146,7 @@ export async function buildApp(options: AppOptions = {}): Promise<AppHandle> {
     revision: store.get().revision,
     houses: store.get().houses.length,
     floors: store.get().houses.reduce((sum, house) => sum + house.floors.length, 0),
+    trash: store.listTrash().length,
   }));
 
   app.get('/api/workspace', async () => store.get());
@@ -156,7 +158,69 @@ export async function buildApp(options: AppOptions = {}): Promise<AppHandle> {
       return workspace;
     } catch (error) {
       request.log.warn({ err: error }, 'Invalid workspace update');
-      return reply.code(400).send({ error: '工作区数据格式不正确' });
+      return reply
+        .code(error instanceof WorkspaceError ? error.statusCode : 400)
+        .send({ error: error instanceof Error ? error.message : '工作区数据格式不正确' });
+    }
+  });
+
+  app.get('/api/trash', async () => store.listTrash());
+
+  app.post('/api/houses/:id/trash', async (request, reply) => {
+    try {
+      const result = store.trashHouse((request.params as { id: string }).id);
+      hub.everyone({ type: 'workspace:updated', workspace: result.workspace, origin: 'trash' });
+      hub.everyone({ type: 'trash:updated', trash: result.trash });
+      return result;
+    } catch (error) {
+      return reply
+        .code(error instanceof WorkspaceError ? error.statusCode : 400)
+        .send({ error: error instanceof Error ? error.message : '移入回收站失败' });
+    }
+  });
+
+  app.post('/api/trash/:id/restore', async (request, reply) => {
+    try {
+      const result = store.restoreHouse((request.params as { id: string }).id);
+      hub.everyone({ type: 'workspace:updated', workspace: result.workspace, origin: 'restore' });
+      hub.everyone({ type: 'trash:updated', trash: result.trash });
+      return result;
+    } catch (error) {
+      return reply
+        .code(error instanceof WorkspaceError ? error.statusCode : 400)
+        .send({ error: error instanceof Error ? error.message : '恢复住宅失败' });
+    }
+  });
+
+  app.post('/api/trash/:id/challenge', async (request, reply) => {
+    try {
+      return store.createDeleteChallenge((request.params as { id: string }).id);
+    } catch (error) {
+      return reply
+        .code(error instanceof WorkspaceError ? error.statusCode : 400)
+        .send({ error: error instanceof Error ? error.message : '无法创建删除验证码' });
+    }
+  });
+
+  app.delete('/api/trash/:id', async (request, reply) => {
+    try {
+      const body = (request.body ?? {}) as { challengeId?: unknown; code?: unknown };
+      const challengeId = typeof body.challengeId === 'string' ? body.challengeId : '';
+      const code = typeof body.code === 'string' ? body.code : '';
+      if (!challengeId || !/^\d{4}$/.test(code)) {
+        return reply.code(400).send({ error: '请输入 4 位数字验证码' });
+      }
+      const trash = store.permanentlyDelete(
+        (request.params as { id: string }).id,
+        challengeId,
+        code,
+      );
+      hub.everyone({ type: 'trash:updated', trash });
+      return { trash };
+    } catch (error) {
+      return reply
+        .code(error instanceof WorkspaceError ? error.statusCode : 400)
+        .send({ error: error instanceof Error ? error.message : '永久删除失败' });
     }
   });
 
@@ -195,6 +259,7 @@ export async function buildApp(options: AppOptions = {}): Promise<AppHandle> {
             hub.send(socket, {
               type: 'welcome',
               workspace: store.get(),
+              trash: store.listTrash(),
               clients: hub.size,
             });
             return;
@@ -221,7 +286,11 @@ export async function buildApp(options: AppOptions = {}): Promise<AppHandle> {
               );
             } catch (error) {
               request.log.warn({ err: error }, 'Rejected websocket workspace update');
-              hub.send(socket, { type: 'error', message: '工作区同步失败，数据格式不正确' });
+              hub.send(socket, {
+                type: 'error',
+                message: error instanceof Error ? error.message : '工作区同步失败，数据格式不正确',
+                code: error instanceof WorkspaceError ? error.code : 'INVALID_WORKSPACE',
+              });
             }
           }
         })();
@@ -255,6 +324,7 @@ export async function buildApp(options: AppOptions = {}): Promise<AppHandle> {
   app.addHook('onClose', async () => {
     clearInterval(heartbeat);
     hub.closeAll();
+    store.close();
   });
 
   return { app, store, hub, dataDir, webRoot };

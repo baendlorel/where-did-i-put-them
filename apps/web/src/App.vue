@@ -8,10 +8,12 @@ import SceneView from './components/SceneView.vue';
 import SearchPalette from './components/SearchPalette.vue';
 import ToolRail from './components/ToolRail.vue';
 import TopBar from './components/TopBar.vue';
+import TrashDialog from './components/TrashDialog.vue';
 import {
   activeFloor,
   activeHouse,
   closeSearch,
+  closeTrash,
   deleteSelection,
   dismissToast,
   loadWorkspace,
@@ -49,6 +51,10 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
   }
 
   if (event.key === 'Escape') {
+    if (state.trashOpen) {
+      closeTrash();
+      return;
+    }
     if (state.helpOpen) {
       toggleHelp(false);
       return;
@@ -59,7 +65,7 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
     }
   }
 
-  if (state.searchOpen || state.helpOpen) return;
+  if (state.searchOpen || state.helpOpen || state.trashOpen) return;
   if (isTyping(event)) return;
 
   if (modifier && event.key.toLowerCase() === 'z') {
@@ -175,6 +181,7 @@ onBeforeUnmount(() => {
 
     <SearchPalette />
     <HelpDialog />
+    <TrashDialog />
 
     <div class="toast-stack">
       <TransitionGroup name="slide-up">

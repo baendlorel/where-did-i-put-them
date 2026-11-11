@@ -5,6 +5,9 @@ dist
 apps/server/data/project.json
 apps/server/data/project.legacy.json
 apps/server/data/workspace.json
+apps/server/data/workspace.legacy.json
+apps/server/data/wdipt.db
+apps/server/data/wdipt.db-*
 apps/server/data/*.tmp
 playwright-report
 test-results
